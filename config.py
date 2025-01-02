@@ -3,10 +3,9 @@
 PCT_DATA            = 1             # proportion of full data used
 TRAIN_SPLIT         = 0.9           # 10% reserved for validation
 
-TOKENS_PER_BATCH    = 2 ** 16       # 2^19 = 524,288 
+TOKENS_PER_BATCH    = 2 ** 19       # 2^19 = 524,288 
 BATCH_SIZE          = 16            # mini-batch size (samples per forward pass)
 BLOCK_SIZE          = 1024          # context length <= 1024
-GRAD_ACCUM_STEPS    = int(TOKENS_PER_BATCH / (BATCH_SIZE * BLOCK_SIZE))
 CHUNK_SAMPLING      = False         # data loading style (see datasets.py)
 
 ITERATIONS          = 301           # no. of model updates during training

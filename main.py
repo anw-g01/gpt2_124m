@@ -1,4 +1,3 @@
-import torch
 from model import GPT2_124M, GPT2Config
 from train import train, plot_losses, plot_lr
 
@@ -9,7 +8,7 @@ if __name__ == "__main__":
     model = GPT2_124M(GPT2Config(vocab_size=50304))     # increase vocab size to (2^7 * 3 * 131)
 
     trained_model, train_losses, val_losses, learning_rates = train(model)      # train model
-
+    
     # ----- LOAD MODEL WEIGHTS (OPTIONAL) ----- #
     # state_dict = torch.load(f"<file_name>")     # load pre-trained model weights state_dict()
     # strip "_orig_mod." prefix if it exists, due to torch.compile() from training:
