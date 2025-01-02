@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import tiktoken
 import inspect
 import math
-from config import BATCH_SIZE, GRAD_ACCUM_STEPS, ITERATIONS
+from config import ITERATIONS
 
 @dataclass
 class GPT2Config:
@@ -18,8 +18,8 @@ class GPT2Config:
 class Attention(nn.Module):
     """
     Combined multi-headed self-attention and causal masking.
-    `__call__()` method calculates query, key, values for all heads in batch and transpose
-      head forward to be the batch dimension. Where transformer channels, `C` (`n_embd`) = `768` 
+    `__call__()` method calculates query, key, values for all heads in a batch and transposes
+    head forward to be the batch dimension. Where transformer channels, `C` (`n_embd`) = `768` 
     `= n_heads * head_size`, so `head_size = 64` for `GPT-2 (124M)`.
     """
 
@@ -167,12 +167,12 @@ class GPT2_124M(nn.Module):
         -----
         Args:
             - `text` (`str`) - input string of text to feed into the model.
-        
+
         Keyword args:
             - `n_seqs` (`int`) - number of return sequences to output.
             - `max_length` (`int`) - token length of each return sequence.
             - `k` (`int`) - limits sampling to the top `k` most probable tokens at each step.
-       
+
        Returns:
             - `dict` - dictionary of `n_seqs` generated text samples.
         """
@@ -205,10 +205,10 @@ class GPT2_124M(nn.Module):
     
     def save(self, file_name=None):
         """
-        Save and download model's weights in a PyTorch `.pth` file.
+        Save and download the model's weights in a PyTorch `.pth` file.
         """
         if file_name is None:
-            batch_size = BATCH_SIZE * GRAD_ACCUM_STEPS
+            batch_size = 512    # batch_size * grad_accum_steps * ddp_world_size
             file_name = f"GPT2_124M_BS({batch_size})_ITER({ITERATIONS})"
         torch.save(self.state_dict(), f"{file_name}.pth")
         print(f"model weights saved as: {file_name}")
