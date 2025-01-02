@@ -1,5 +1,7 @@
 """
 https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu
+Process the FineWeb-Edu Sample-10BT dataset by tokenzing documents and saving them in fixed-size shards.
+Each shard is saved as a NumPy array with 100M tokens (available space), of data type `uint16`.
 """
 
 import numpy as np
@@ -48,9 +50,11 @@ def print_stats(dataset: datasets.Dataset) -> tuple:
     1. Calculates the total number of tokens in the entire dataset, including the end-of-text (EOT) token for each document.
     2. Calculates the number of shards required to store the dataset, based on the specified `SHARD_SIZE` global variable.
     """
-    print(f"total no. of rows: {len(dataset)}")     # no. of rows in the dataset (also see HuggingFace dataset page)
-    total_tokens = sum(row["token_count"] + 1 for row in dataset)    # +1 for the EOT token
-    total_shards = np.ceil(total_tokens / SHARD_SIZE)
+    print(f"\ntotal no. of rows in dataset: {len(dataset):,}")          # no. of rows in the dataset (also see HuggingFace dataset page)
+    # total_tokens = sum(row["token_count"] + 1 for row in dataset)       # +1 for the EOT token
+    # summing each document takes too long; for sample-10Bt total tokens is: 9,982,590,278
+    total_tokens = 9_982_590_278
+    total_shards = int(np.ceil(total_tokens / SHARD_SIZE))
     print(f"total no. of tokens to process: {total_tokens:,} (~{total_tokens / len(dataset):,} tok/doc)")
     print(f"no. of shards: {total_shards:,} (with SHARD_SIZE={SHARD_SIZE * 1e-6:,}M)")
     return total_tokens, total_shards
@@ -74,8 +78,6 @@ def main() -> None:
 
     # --- MAIN PROCESS --- #
     t0 = time.time()    # capture starting time (for logging)
-    t_last = t0         # last update time (for interval calculations)
-
     n_proc = max(1, os.cpu_count() // 2)    # no. of worker processes - use half available CPU cores
     print(f"\nusing {n_proc} CPU cores\n")
     # create a process pool for parallel processing:
@@ -88,7 +90,7 @@ def main() -> None:
         tok_proc = 0        # total no. of ALL tokens processed
 
         # iterate through each document, tokenizing each one in parallel:
-        for tokens in pool.imap(func=tokenize, iterable=fw, chunksize=16):      # input data is split into groups of chunksize
+        for i, tokens in enumerate(pool.imap(func=tokenize, iterable=fw, chunksize=16)):      # input data is split into groups of chunksize
             
             if token_count + len(tokens) < SHARD_SIZE:      # if tokens fit in current shard
 
@@ -97,25 +99,25 @@ def main() -> None:
                 tok_proc += len(tokens)         # all-time processed tokens (never reset)
 
                 # --- PROGRESS LOGGING --- #
-                t1 = time.time()                                # current time
-                dt = t1 - t0                                    # total elapsed time
-                m, s = dt // 60, dt % 60                        # minutes and seconds of elapsed time
-                tps = (tok_proc / dt)                           # average tok/sec processed 
-                rem = total_tokens - tok_proc                   # all-time remaining tokens
-                t_rem = (rem / tps) if tps > 0 else 0           # estimated remaining time to full completion
-                m_rem, s_rem = t_rem // 60, t_rem % 60          # minutes and seconds of remaining time
-                shard_pct = (token_count / SHARD_SIZE) * 100        # percentage completion of current shard
-                full_pct = (tok_proc / total_tokens) * 100          # total overall completion
-                progress_str = (
-                    f"\rprocessing shard {shard_idx + 1}/{total_shards}: "                      # current shard number
-                    f"{token_count}M/{SHARD_SIZE * 1e-6:.2f}M tokens ({shard_pct:.0f}%) | "     # processed tokens for given shard (in millions)
-                    f"total: {tok_proc * 1e-9:.2f}B/{total_tokens * 1e-9:.2f}B tok | "          # all-time processed tokens (in billions)
-                    f"{tps * 1e-6:.1f}M tok/sec | "             # tokens per seconds processed
-                    f"{full_pct:.1f}% complete | "              # percentage completion (full process)
-                    f"{m:02}:{s:02}/{m_rem:02}:{s_rem:02}"      # elapsed time / estimated remaining time
-                )
-                print(progress_str, end="")
-
+                if i % 50_000 == 0:                                 # log progress every <interval_value> documents                        
+                    t1 = time.time()                                # current time
+                    dt = t1 - t0                                    # total elapsed time
+                    m, s = dt // 60, dt % 60                        # minutes and seconds of elapsed time (same as //60 and %60)
+                    tps = (tok_proc / dt)                           # average tok/sec processed 
+                    rem = total_tokens - tok_proc                   # all-time remaining tokens
+                    t_rem = (rem / tps) if tps > 0 else 0           # estimated remaining time to full completion
+                    m_rem, s_rem = t_rem // 60, t_rem % 60          # minutes and seconds of remaining time
+                    shard_pct = (token_count / SHARD_SIZE) * 100    # percentage completion of current shard
+                    full_pct = (tok_proc / total_tokens) * 100      # total overall completion
+                    progress_str = (
+                        f"\rprocessing shard {shard_idx + 1}/{total_shards}: "                      # current shard number
+                        f"{token_count * 1e-6:.2f}M/{SHARD_SIZE * 1e-6:.0f}M tokens ({shard_pct:.0f}%) | "     # processed tokens for given shard (in millions)
+                        f"total: {tok_proc * 1e-9:.2f}B/{total_tokens * 1e-9:.2f}B tok | "          # all-time processed tokens (in billions)
+                        f"{tps * 1e-6:.1f}M tok/sec | "             # tokens per seconds processed
+                        f"{full_pct:.1f}% complete | "              # percentage completion (full process)
+                        f"{int(m):02d}:{int(s):02d}/{int(m_rem):02d}:{int(s_rem):02d}"      # elapsed time / estimated remaining time
+                    )
+                    print(progress_str, end="")
             else:
                 # add tokens to any remaining leftover space
                 remaining = SHARD_SIZE - token_count                                        # calculate how many more tokens can fit
