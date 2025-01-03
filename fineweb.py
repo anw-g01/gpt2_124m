@@ -11,6 +11,7 @@ import sys
 import multiprocessing as mp
 import datasets
 import time
+from tqdm import tqdm
 
 # ------ GLOBAL VARIABLES ------ #
 
@@ -21,8 +22,9 @@ SHARD_SIZE = int(1e8)                           # 100M tokens/shard (100 total s
 
 # construct a full path to the local data cache directory
 DATA_CACHE_DIR = os.path.join(os.path.dirname(__file__), LOCAL_DIR)
-os.makedirs(DATA_CACHE_DIR, exist_ok=True)      # create the directory if it doesn't exist
-ENCODER = tiktoken.get_encoding("gpt2")         # GPT-2 tokenizer 
+os.makedirs(DATA_CACHE_DIR, exist_ok=True)          # create the directory if it doesn't exist
+ENCODER = tiktoken.get_encoding("gpt2")             # initialise GPT-2 tokenizer 
+EOT = ENCODER._special_tokens["<|endoftext|>"]      # end-of-text (EOT) token 
 
 # ------ HELPER FUNCTIONS ------ #
 
@@ -30,8 +32,7 @@ def tokenize(row: dict) -> np.array:
     """
     Tokenizes the text (key) from a single document (row from dataset) and returns a NumPy array of `uint16` tokens.
     """
-    eot = ENCODER._special_tokens["<|endoftext|>"]
-    tokens = [eot]     # start token array with end-of-text (EOT) token
+    tokens = [EOT]     # start token array with end-of-text (EOT) token
     tokens.extend(ENCODER.encode_ordinary(row["text"]))
     tokens = np.array(tokens)                               # convert to a NumPy array
     # check tokens are within the valid range of 16-bit unsigned integers
@@ -55,8 +56,8 @@ def print_stats(dataset: datasets.Dataset) -> tuple:
     # summing each document takes too long; for sample-10Bt total tokens is: 9,982,590,278
     total_tokens = 9_982_590_278
     total_shards = int(np.ceil(total_tokens / SHARD_SIZE))
-    print(f"total no. of tokens to process: {total_tokens:,} (~{total_tokens / len(dataset):,} tok/doc)")
-    print(f"no. of shards: {total_shards:,} (with SHARD_SIZE={SHARD_SIZE * 1e-6:,}M)")
+    print(f"total no. of tokens to process: {total_tokens:,} (~{int(total_tokens / len(dataset)):,} tok/doc)")
+    print(f"no. of shards: {total_shards:,} (with SHARD_SIZE={int(SHARD_SIZE * 1e-6):,}M)")
     return total_tokens, total_shards
 
 # ------ MAIN PROCESS LOOP FUNCTION ------ #
@@ -68,68 +69,53 @@ def main() -> None:
     Uses parallel processing from the `multiprocessing` library to improve tokenisation speed.
     """
 
-    # --- DOWNLOAD AND LOAD THE DATASET --- #
-    try:
-        fw = datasets.load_dataset(DATASET_NAME, name=REMOTE_NAME, split="train")
-    except Exception as e:
-        print(f"Failed to load dataset: {e}")
-        sys.exit(1)
+    fw = datasets.load_dataset(DATASET_NAME, name=REMOTE_NAME, split="train")
     total_tokens, total_shards = print_stats(fw)    # get and print key dataset stats
 
     # --- MAIN PROCESS --- #
-    t0 = time.time()    # capture starting time (for logging)
+
     n_proc = max(1, os.cpu_count() // 2)    # no. of worker processes - use half available CPU cores
     print(f"\nusing {n_proc} CPU cores\n")
     # create a process pool for parallel processing:
     # distribute tasks across multiple CPU cores to speed up workload
+
     with mp.Pool(processes=n_proc) as pool:               
 
-        shard_idx = 0       # track current shard number   
-        all_tokens = np.empty(SHARD_SIZE, dtype=np.uint16)   # pre-allocated array (buffer) to store current shard tokens
-        token_count = 0     # track stored tokens in current shard
-        tok_proc = 0        # total no. of ALL tokens processed
+        shard_idx = 0           # track current shard number   
+        arr = np.empty(SHARD_SIZE, dtype=np.uint16)   # pre-allocated array (buffer) to store current shard tokens
+        shard_tokens = 0        # track stored tokens in current shard
+        tok_proc = 0            # total no. of ALL tokens processed
 
-        # iterate through each document, tokenizing each one in parallel:
-        for i, tokens in enumerate(pool.imap(func=tokenize, iterable=fw, chunksize=16)):      # input data is split into groups of chunksize
+        pbar = tqdm(
+            iterable=pool.imap(func=tokenize, iterable=fw, chunksize=64),   # iterate through each document, tokenizing each one in parallel
+            bar_format="{desc}[{bar:10}] {percentage:.1f}% complete | [{elapsed}/{remaining}] ({rate_fmt})",
+            desc=f"processing shard {shard_idx + 1}/{total_shards} | ",
+            total=len(fw),      # main iterator: no. of documents (rows) in the dataset
+            unit=" docs",       # units for the rate
+            ascii="->=",        # custom ASCII progress bar
+            mininterval=1       # minimum update interval for the progress bar (in seconds)
+        )
+        for tokens in pbar:
             
-            if token_count + len(tokens) < SHARD_SIZE:      # if tokens fit in current shard
+            if shard_tokens + len(tokens) < SHARD_SIZE:      # if tokens fit in current shard
 
-                all_tokens[token_count: token_count + len(tokens)] = tokens     # store all fittable tokens in array
-                token_count += len(tokens)      # tokens processed in current shard
+                arr[shard_tokens: shard_tokens + len(tokens)] = tokens     # store all fittable tokens in array
+                shard_tokens += len(tokens)      # tokens processed in current shard
                 tok_proc += len(tokens)         # all-time processed tokens (never reset)
 
-                # --- PROGRESS LOGGING --- #
-                if i % 50_000 == 0:                                 # log progress every <interval_value> documents                        
-                    t1 = time.time()                                # current time
-                    dt = t1 - t0                                    # total elapsed time
-                    m, s = dt // 60, dt % 60                        # minutes and seconds of elapsed time (same as //60 and %60)
-                    tps = (tok_proc / dt)                           # average tok/sec processed 
-                    rem = total_tokens - tok_proc                   # all-time remaining tokens
-                    t_rem = (rem / tps) if tps > 0 else 0           # estimated remaining time to full completion
-                    m_rem, s_rem = t_rem // 60, t_rem % 60          # minutes and seconds of remaining time
-                    shard_pct = (token_count / SHARD_SIZE) * 100    # percentage completion of current shard
-                    full_pct = (tok_proc / total_tokens) * 100      # total overall completion
-                    progress_str = (
-                        f"\rprocessing shard {shard_idx + 1}/{total_shards}: "                      # current shard number
-                        f"{token_count * 1e-6:.2f}M/{SHARD_SIZE * 1e-6:.0f}M tokens ({shard_pct:.0f}%) | "     # processed tokens for given shard (in millions)
-                        f"total: {tok_proc * 1e-9:.2f}B/{total_tokens * 1e-9:.2f}B tok | "          # all-time processed tokens (in billions)
-                        f"{tps * 1e-6:.1f}M tok/sec | "             # tokens per seconds processed
-                        f"{full_pct:.1f}% complete | "              # percentage completion (full process)
-                        f"{int(m):02d}:{int(s):02d}/{int(m_rem):02d}:{int(s_rem):02d}"      # elapsed time / estimated remaining time
-                    )
-                    print(progress_str, end="")
             else:
                 # add tokens to any remaining leftover space
-                remaining = SHARD_SIZE - token_count                                        # calculate how many more tokens can fit
-                all_tokens[token_count: token_count + remaining] = tokens[:remaining]       # fill remaining space
-                write_datafile(all_tokens, shard_idx)                                       # write full shard to disk
+                remaining = SHARD_SIZE - shard_tokens                                        # calculate how many more tokens can fit
+                arr[shard_tokens: shard_tokens + remaining] = tokens[:remaining]       # fill remaining space
+                write_datafile(arr, shard_idx)                                       # write full shard to disk
                 shard_idx += 1                                                              # move to next shard
-                # start by populating the next shard with the leftovers of the current document
-                all_tokens[: len(tokens) - remaining] = tokens[remaining:]
-                token_count = len(tokens) - remaining                           # reset token count to start with leftovers
+                pbar.set_description_str(f"processing shard {shard_idx + 1}/{total_shards} | ")
+                # start by populating the next shard with the leftovers of the current document (carry tokens over) 
+                arr[: len(tokens) - remaining] = tokens[remaining:]
+                shard_tokens = len(tokens) - remaining                           # reset token count to start with leftovers
 
-        if token_count != 0:
-            write_datafile(all_tokens, shard_idx)   # write any further remaining tokens as the last shard
+        if shard_tokens != 0:
+            write_datafile(arr, shard_idx)   # write any further remaining tokens as the last shard
 
 
 if __name__ == "__main__":
