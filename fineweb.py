@@ -2,6 +2,15 @@
 https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu
 Process the FineWeb-Edu Sample-10BT dataset by tokenzing documents and saving them in fixed-size shards.
 Each shard is saved as a NumPy array with 100M tokens (available space), of data type `uint16`.
+
+>> python fineweb.py
+total no. of rows in dataset: 9,672,101
+total no. of tokens to process: 9,982,590,278 (~1,032 tok/doc)
+no. of shards: 100 (with SHARD_SIZE=100M)
+
+using 4 CPU cores for tokenization...
+
+processing shard 56/100 | [====>-----] 5.53B/9.98B (55.4% complete) | [14:37<27:23, 4.25M tok/sec]  
 """
 
 import numpy as np
@@ -56,8 +65,9 @@ class tqdmFW(tqdm):
     
     def __init__(self, *args, **kwargs):
         params = {
-            "bar_format": "{desc}[{bar:10}] {n_fmt}/{total_fmt} ({percentage:.1f}% complete) | [{elapsed}<{remaining}] ({rate_fmt})",
-            "ascii": "->="
+            "bar_format": "{desc}[{bar:10}] {n_fmt}/{total_fmt} ({percentage:.1f}% complete) | [{elapsed}<{remaining}, {rate_fmt}]",
+            "ascii": "->=",
+            "mininterval": 3,
         }
         for key, value in params.items():
             kwargs.setdefault(key, value)
@@ -66,9 +76,12 @@ class tqdmFW(tqdm):
     @property
     def format_dict(self):
         d = super().format_dict
-        d["rate_fmt"] = f"{d['rate']:,.0f} tok/sec" if d["rate"] else "?"       # rate of processing tokens
         d["n_fmt"] = f"{d['n'] * 1e-9:.2f}B" if d["n"] else "?"                 # current iteration (tokens processed) in billions
-        d["total_fmt"] = f"{d['total'] * 1e-9:.2f}B" if d["total"] else "?"     # total iterations (tokens to process) in billions 
+        d["total_fmt"] = f"{d['total'] * 1e-9:.2f}B" if d["total"] else "?"     # total iterations (tokens to process) in billions
+        if (d["rate"] is not None) and (d["rate"] < 1e6):                                                     # rate of processing tokens
+            d["rate_fmt"] = f"{d['rate'] * 1e-3:.2f}k tok/sec" if d["rate"] else "?"    # in thousands
+        else:
+            d["rate_fmt"] = f"{d['rate'] * 1e-6:.2f}M tok/sec" if d["rate"] else "?"    # in millions
         return d
 
 # ------ MAIN PROCESS LOOP FUNCTION ------ #
