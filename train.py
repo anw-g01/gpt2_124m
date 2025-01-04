@@ -69,37 +69,9 @@ def train(model: torch.nn.Module) -> tuple:
     torch.set_float32_matmul_precision("high")      # set global tensor dtype as TensorFloat32 
 
     # ---------- LOAD DATA ---------- # 
-    print(f"\nloading data...\n")
-    train_dataset = TinyShakespeare(        # load custom Dataset class for training
-        block_size=BLOCK_SIZE,
-        pct=PCT_DATA,
-        train_split=TRAIN_SPLIT,
-    )
-    train_sampler = DistributedSampler(     # divides the dataset into equal-sized chunks across all participating GPUs (processes)
-        train_dataset,
-        num_replicas=DDP_WORLD_SIZE,        # total no. of processes
-        rank=DDP_RANK,                      # current GPU integer ID
-        shuffle=True
-    )
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=BATCH_SIZE,
-        sampler=train_sampler,              # using DistributedSampler
-        pin_memory=True
-    )
-    val_loader = DataLoader(                # validation dataset (no DistributedSampler used)
-        TinyShakespeare(
-            block_size=BLOCK_SIZE,
-            pct=PCT_DATA,
-            train_split=TRAIN_SPLIT,
-            split="val",
-            verbose=False
-        ),
-        batch_size=BATCH_SIZE,              # N.B. only VAL_ACCUM_STEPS batches used 
-        shuffle=False
-    )
-    train_iter = cycle(iter(train_loader))      # infinite iterator over train_loader
-    val_iter = cycle(iter(val_loader))          # infinite iterator over val_loader
+
+    train_loader, val_loader = load_shakespeare(DDP_WORLD_SIZE, DDP_LOCAL_RANK)    # load training and validation data
+    train_iter, val_iter = cycle(train_loader), cycle(val_loader)                  # create infinite iterators
 
     if MASTER_PROCESS:    # print in command window for only one GPU
         print("\n*-------------- TRAINING --------------*")
@@ -144,7 +116,7 @@ def train(model: torch.nn.Module) -> tuple:
         learning_rates = np.empty(ITERATIONS)
 
     import sys; sys.exit()
-
+    
     for i in range(ITERATIONS):     # not using set_epoch() since iterations are used over epochs
 
         if MASTER_PROCESS:          # capture starting time for stats (master process only)
@@ -171,7 +143,7 @@ def train(model: torch.nn.Module) -> tuple:
             else:
                 loss.backward()                 # no syncrhonisation for a single GPU
         if DDP_WORLD_SIZE > 1:                              # calculate and synchronise the average loss across all GPUs
-            dist.all_reduce(train_loss, op=ReduceOp.AVG)    # all_reduce places the same final averaged result back on all GPUs
+            dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)    # all_reduce places the same final averaged result back on all GPUs
         norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)           # gradient clipping
         optimiser.step()                                                            # update parameters after GRAD_ACCUM_STEPS
 
@@ -231,6 +203,43 @@ def train(model: torch.nn.Module) -> tuple:
     return model, train_losses, val_losses, learning_rates
 
 
+def load_shakespeare(ddp_world_size: int, ddp_rank: int) -> tuple:
+    """
+    Loads training and validation `DataLoader` (PyTorch) objects for the `TinyShakespeare()` `Dataset`.
+    For DDP, training data is split into equal-sized chunks across all GPUs (processes) using `DistributedSampler`.
+    """
+    print(f"\nloading data...\n")
+    train_dataset = TinyShakespeare(        # load custom Dataset class for training
+        block_size=BLOCK_SIZE,
+        pct=PCT_DATA,
+        train_split=TRAIN_SPLIT,
+    )
+    train_sampler = DistributedSampler(     # for DDP: divides the dataset into equal-sized chunks across all GPUs (processes)
+        train_dataset,
+        num_replicas=ddp_world_size,        # total no. of processes
+        rank=ddp_rank,                      # current GPU integer ID
+        shuffle=True
+    )
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        sampler=train_sampler,              # using DistributedSampler
+        pin_memory=True
+    )
+    val_loader = DataLoader(                # validation dataset (no DistributedSampler used)
+        TinyShakespeare(
+            block_size=BLOCK_SIZE,
+            pct=PCT_DATA,
+            train_split=TRAIN_SPLIT,
+            split="val",
+            verbose=False
+        ),
+        batch_size=BATCH_SIZE,              # N.B. only VAL_ACCUM_STEPS batches used 
+        shuffle=False
+    )
+    return train_loader, val_loader 
+
+
 def plot_losses(train_losses: np.array, val_losses=None) -> None:
     """
     Plot training and validation losses over iterations during a training run.
@@ -274,171 +283,3 @@ def plot_lr(learning_rates: np.array):
     )
     plt.legend()
     plt.show()
-
-
-def _train(model: torch.nn.Module) -> tuple:
-    """
-    NO LONGER USED: deprecated training loop that doesn't utilise DDP.
-    The main `train()` function loop handles for single GPU training as well.
-    This function is retained for educational purposes only.
-    """
-
-    # Ensure a GPU is available and properly configured.
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"using device: {DEVICE.type.upper()}")
-    assert DEVICE.type == "cuda", "DEVICE must be 'cuda' to run the training script."
-
-    torch.manual_seed(2001)     # for reproducibility
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(2001)
-
-    torch.set_float32_matmul_precision("high")     # set global tensor dtype as TensorFloat32 
-
-    # ---------- LOAD DATA ---------- # 
-
-    print(f"\nloading data...\n")
-    if CHUNK_SAMPLING:
-        train_loader = DataLoader(
-            TinyShakespeare(
-                BLOCK_SIZE,
-                pct=PCT_DATA,
-                train_split=TRAIN_SPLIT,
-                batch_size=BATCH_SIZE,
-                verbose=False
-            ),
-            batch_size=None,
-            shuffle=True
-        )
-    else:
-        train_loader = DataLoader(
-            TinyShakespeare(
-                BLOCK_SIZE,
-                pct=PCT_DATA,
-                train_split=TRAIN_SPLIT,
-                verbose=False
-            ),
-            batch_size=BATCH_SIZE,
-            shuffle=True
-        )
-    val_loader = DataLoader(
-        TinyShakespeare(
-            BLOCK_SIZE,
-            pct=PCT_DATA,
-            train_split=TRAIN_SPLIT,
-            split="val",
-        ),
-        batch_size=BATCH_SIZE,      # no chunk sampling used as only VAL_ACCUM_STEPS batches used 
-        shuffle=False
-    )
-    val_iter = cycle(iter(val_loader))          # infinite iterator over val_loader
-    train_iter = cycle(iter(train_loader))      # infinite iterator over train_loader
-    print(f"chunk sampling for training: {CHUNK_SAMPLING}")
-
-    print("\n*------------ TRAINING ------------*")
-    print(f"training tokens per batch: {TOKENS_PER_BATCH:,}")
-    print(f"mini-batch size: {BATCH_SIZE} ({GRAD_ACCUM_STEPS} accumulation steps)")
-    batches_per_epoch_train = int(math.ceil(len(train_loader) / GRAD_ACCUM_STEPS))
-    print(f"batches per epoch: {batches_per_epoch_train:,} ({len(train_loader):,} mini-batches)")
-
-    print("\n*------------ VALIDATION ------------*")
-    print(f"validation tokens per batch: {BATCH_SIZE * BLOCK_SIZE * VAL_ACCUM_STEPS:,}")
-    print(f"mini-batch size: {BATCH_SIZE} ({VAL_ACCUM_STEPS} accumulation steps)")
-    batches_per_epoch_val= int(math.ceil(len(val_loader) / VAL_ACCUM_STEPS))
-    print(f"batches per epoch: {batches_per_epoch_val:,} ({len(val_loader):,} mini-batches)")
-
-    # ---------- MODEL INSTANCE ---------- #
-
-    print(f"\nloading model, optimiser and scheduler...\n")
-    model.to(DEVICE)     # GPT(GPTConfig(vocab_size=50304)) in main.py
-    print(f"no. of model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
-
-    optimiser = model.configure_optim(WEIGHT_DECAY, LEARNING_RATE, DEVICE.type)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer=optimiser,
-        T_max=(MAX_STEPS - WARMUP_STEPS),   # decay starts after warmup
-        eta_min=0.1*LEARNING_RATE           # minimum learning rate
-    )
-
-    print(f"\ncompiling model...")
-    model = torch.compile(model)
-
-    # ---------- MAIN LOOP ---------- # 
-
-    print(f"\nrunning validation every {VAL_INTERVAL} iterations")
-    print(f"running {ITERATIONS:,} total iterations...\n")
-    train_losses = np.empty(ITERATIONS)
-    val_losses = np.full(ITERATIONS, np.nan)    # initialise with NaNs (due to interval usage)
-    learning_rates = np.empty(ITERATIONS)
-
-    for i in range(ITERATIONS):
-
-        # ----- TRAINING LOOP ----- #
-        t0 = time.time()    # capture starting time
-        model.train()
-        X, y = next(train_iter)
-        X_train, y_train = X.to(DEVICE), y.to(DEVICE)
-
-        # ----- GRADIENT ACCUMULATION ----- #
-        optimiser.zero_grad()                                                       # reset gradients
-        train_loss = 0                                                              # accumulated train loss
-        for _ in range(GRAD_ACCUM_STEPS):
-            with torch.autocast(device_type=DEVICE.type, dtype=torch.bfloat16):     # mixed precision
-                _, loss = model(X_train, y_train)
-            loss /= GRAD_ACCUM_STEPS                                                # scale loss to mimic full total batch average
-            train_loss += loss.detach()                                             # prevent carry over of computational graph
-            loss.backward()                                                         # accumulate gradients (+=)
-        norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)           # gradient clipping
-        optimiser.step()                                                            # update parameters after GRAD_ACCUM_STEPS
-
-        # ----- LEARNING RATE SCHEDULER ----- #
-        if i < WARMUP_STEPS:
-            lr = LEARNING_RATE * (i + 1) / WARMUP_STEPS      # linear warmup to LEARNING_RATE
-            for param_group in optimiser.param_groups:
-                param_group["lr"] = lr
-        else:
-            scheduler.step()                                    # update learning rate after WARM_UPSTEPS
-            lr = scheduler.get_last_lr()[0]                     # use param group 0
-
-        # ----- TRACK METRICS ----- #
-        torch.cuda.synchronize()    # wait until CUDA operations queued on a GPU are completed before proceeding
-        t1 = time.time()
-        dt = (t1 - t0) * 1e3        # time difference in miliseconds
-        tps = (X.numel() * GRAD_ACCUM_STEPS) / (t1 - t0)    # training tokens/second processed
-
-        # ----- VALIDATION LOOP ----- #
-        if i % VAL_INTERVAL == 0:
-            t0_val = time.time()
-            model.eval()
-            val_loss = 0
-            with torch.no_grad():
-                for _ in range(VAL_ACCUM_STEPS):
-                    X, y = next(val_iter)
-                    X_val, y_val = X.to(DEVICE), y.to(DEVICE)
-                    _, loss = model(X_val, y_val)
-                    val_loss += loss.item() / VAL_ACCUM_STEPS    # equivalent to val_loss /= VAL_ACCUM_STEPS in the final iteration
-            torch.cuda.synchronize()
-            t1_val = time.time()
-            dt_val = (t1_val - t0_val) * 1e3
-            tps_val = (X.numel() * VAL_ACCUM_STEPS) / (t1_val - t0_val)
-            val_losses[i] = val_loss
-        
-        # ----- LOG PROGRESS & STATS ----- #
-        learning_rates[i] = lr      # populate arrays for plotting
-        train_losses[i] = train_loss.item()
-        if i % LOG_INTERVAL == 0:
-            pct = (i + 1) / ITERATIONS * 100     # percentage completion
-            progress_str = (
-                f"\r{i + 1:,}/{ITERATIONS:,} ({pct:.0f}%) | "
-                f"train_loss: {train_loss.item():.3f} | "
-                f"{dt * 1e-3:,.2f} sec/batch ({dt / GRAD_ACCUM_STEPS:.1f} ms/iter) | "
-                f"{tps:,.0f} tok/sec | "
-                f"val_loss: {val_loss:.3f} | "
-                f"{dt_val * 1e-3:.1f} sec ({tps_val:,.0f} tok/sec)"
-            )
-            print(progress_str, end="")
-    print("\n\nTraining Complete.")
-    return model, train_losses, val_losses, learning_rates
-
-
-
-    
