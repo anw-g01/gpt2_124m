@@ -5,9 +5,8 @@ if __name__ == "__main__":
 
     # ----- CREATE MODEL INSTANCE AND TRAIN ----- #
 
-    model = GPT2_124M(GPT2Config(vocab_size=50304))     # increase vocab size to (2^7 * 3 * 131)
 
-    trained_model, train_losses, val_losses, learning_rates = train(model)      # train model
+    model, train_losses, val_losses, learning_rates = train()      # train model
     
     # ----- LOAD MODEL WEIGHTS (OPTIONAL) ----- #
     # state_dict = torch.load(f"<file_name>")     # load pre-trained model weights state_dict()
