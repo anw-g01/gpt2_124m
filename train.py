@@ -39,7 +39,7 @@ def initialise_ddp() -> tuple:
     return ddp_rank, ddp_local_rank, ddp_world_size, device, master_process
 
 
-def train(model: torch.nn.Module) -> tuple:
+def train() -> tuple:
     """
     Train a PyTorch model using gradient accumulation, mixed precision, and cosine decay learning rate scheduling.
     Selected hyperparameters are close to GPT-2 and GPT-3 model choices by OpenAI, released in any papers.
@@ -48,15 +48,12 @@ def train(model: torch.nn.Module) -> tuple:
     - Learning rate scheduling includes a linear warm-up phase (to `LEARNING_RATE`) followed by a cosine decay rate.
     - Validation is performed periodically based on `VAL_INTERVAL` (see `config.py`).
     -----
-    Args:
-        `model` (`torch.nn.Module`): The PyTorch model to be trained. Assumes compatibility with a `CUDA` device.
     Returns:
         `tuple`: A tuple containing:
-            - `model` (`torch.nn.Module`): The trained model with updated weights.
+            - `model` (`torch.nn.Module`): The trained model with updated weights, specificly `GPT2_124M(GPT2Config(vocab_size=50304))`. 
             - `train_losses` (`np.ndarray`): Array of training losses recorded at each iteration.
             - `val_losses` (`np.ndarray`): Array of validation losses recorded every `VAL_INTERVAL` iterations.
             - `learning_rates` (`np.ndarray`): Learning rate values tracked at each iteration.
-    
     """
 
     # get distributed parameters from environment variables (if using DDP)
@@ -92,7 +89,9 @@ def train(model: torch.nn.Module) -> tuple:
         print(f"\nloading model, optimiser and scheduler...\n")
         print(f"no. of model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
 
-    model.to(DEVICE)     # should be a GPT2_124M(GPTConfig(vocab_size=50304)) model instantiated in main.py
+    import sys; sys.exit()      # currently exiting early for TESTING purposes
+
+    model = GPT2_124M(GPT2Config(vocab_size=50304)).to(DEVICE)     # increase vocab size to (2^7 * 3 * 131)
     optimiser = model.configure_optim(WEIGHT_DECAY, LEARNING_RATE, DEVICE.type)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer=optimiser,
@@ -115,8 +114,6 @@ def train(model: torch.nn.Module) -> tuple:
         val_losses = np.full(ITERATIONS, np.nan)    # initialise with NaNs (due to interval usage)
         learning_rates = np.empty(ITERATIONS)
 
-    import sys; sys.exit()
-    
     for i in range(ITERATIONS):     # not using set_epoch() since iterations are used over epochs
 
         if MASTER_PROCESS:          # capture starting time for stats (master process only)
@@ -201,6 +198,10 @@ def train(model: torch.nn.Module) -> tuple:
     if DDP_WORLD_SIZE > 1:
         destroy_process_group()
     return model, train_losses, val_losses, learning_rates
+
+
+def load_fineweb(ddp_world_size: int, ddp_rank: int) -> tuple:
+    pass
 
 
 def load_shakespeare(ddp_world_size: int, ddp_rank: int) -> tuple:
