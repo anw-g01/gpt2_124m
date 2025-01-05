@@ -1,10 +1,11 @@
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
 import tiktoken
 import numpy as np
 import os
 from config import DATA_ROOT
 from fineweb import TOTAL_TOKENS    # total no. of tokens in FineWebEdu sample-10BT (9_982_590_278)
+
 
 class TinyShakespeare(Dataset):
     """
@@ -95,24 +96,28 @@ class FineWebEdu(Dataset):
     def __getitem__(self, idx):
         chunk_size = self.batch_size * self.block_size                  # chunk size (tokens per batch) for each batch
         if self.idx + chunk_size >= self.tokens.shape[0]:               # if the current shard is exhausted
-            X1 = self.tokens[self.idx:]                                 # get any remaining tokens of current shard
+            
+            X1 = self.tokens[self.idx:]                                 # store available tokens of current shard
             y1 = self.tokens[self.idx + 1:]                             # corresponding target sequence (next token for each sample)
             self.shard_idx = (self.shard_idx + 1) % len(self.shards)    # move to the next shard (circular indexing)
             self.tokens = self._load_shard(self.shard_idx)              # load the next shard
-            rem = chunk_size - X1.shape[0]                              # remaining tokens for y (due to +1) needed to complete the chunk 
-            if rem == 0:
-                X = X1                                                  # X was filled   
-                y2 = self.tokens[:1]                                     # y is missing one (due to starting index +1)
-                y = torch.cat((y1, y2), dim=0)                          # concatenate the two parts  
-                self.idx = 0                                            # set the new starting local index
-            elif rem > 0: 
+            rem = chunk_size - X1.shape[0]                              # remaining tokens needed for X to complete the chunk 
+            
+            if rem == 0:                                                # if X was exactly filled but y wasn't
+                X = X1                                                  # X is unchanged 
+                y2 = self.tokens[:1]                                    # y is missing one token (due to starting index +1)
+                y = torch.cat((y1, y2), dim=0)                          # concatenate y tensor
+                self.idx = 0                                            # local index started from 0 in the next shard
+           
+            elif rem > 0:                                               # if X and y both need to be filled
                 X2 = self.tokens[: rem]                                 # get the remaining tokens from next shard to complete chunk
                 y2 = self.tokens[: rem + 1]                             # corresponding target sequence
-                X = torch.cat((X1, X2), dim=0)                          # concatenate the two parts
-                y = torch.cat((y1, y2), dim=0)                          # concatenate the two parts  
-                self.idx = chunk_size - X2.shape[0]                     # set the new starting local index
+                X = torch.cat((X1, X2), dim=0)                          # concatenate X
+                y = torch.cat((y1, y2), dim=0)                          # concatenate y  
+                self.idx = rem                                          # set the new starting local index
             else:
-                X, y = X1, y1                                           # X1, y1 are the full chunk
+                X, y = X1, y1                                           # X, y are unchaged (already filled)
+        
         else:   # normal case (no shard boundary crossing)
             X = self.tokens[self.idx: self.idx + chunk_size]                # get the input sequence
             y = self.tokens[self.idx + 1: self.idx + chunk_size + 1]        # get the target sequence (next token for each sample)
@@ -126,31 +131,8 @@ class FineWebEdu(Dataset):
 
 if __name__ == "__main__":
 
-    # ----- DataLoader EXAMPLES with TinyShakespeare ----- #
-
-    batch_size = 64             # samples per forward pass
+    batch_size = 16             # samples per forward pass
     block_size = 1024           # context length
-    # chunk_sampling = False      # batch processing method
-
-    # if chunk_sampling:
-    #     print(f"\nutilising chunk sampling (non-overlapping batches)")
-    #     train_loader = DataLoader(
-    #         TinyShakespeare(block_size=1024, batch_size=16),
-    #         batch_size=None,    # must be set to None
-    #         shuffle=False,
-    #     )
-    # else:
-    #     print(f"\nutilising overlapping samples across batches")
-    #     train_loader = DataLoader(
-    #         TinyShakespeare(block_size),    # no specified batch_size within Dataset class
-    #         batch_size=batch_size,    # specify DataLoader batch size parameter
-    #         shuffle=False
-    #     )
-    # print(f"\ntokens per batch: {batch_size * block_size:,} (batch size {batch_size:,})")
-    # print(f"{len(train_loader):,} available batches per epoch")
-    
-    # X, y = next(iter(train_loader))
-    # print(X.shape, y.shape)     # shape --> [batch_size, block_size]
 
     # ----- DataLoader EXAMPLES with FineWebEdu Sample-10BT ----- #
 
@@ -166,12 +148,69 @@ if __name__ == "__main__":
     )
 
     print(f"\ntokens per batch: {batch_size * block_size:,} (batch size {batch_size:,})")
-    print(f"{len(train_loader):,} available batches per epoch")
+    print(f"{len(train_loader):,} available batches per epoch\n")
     
     train_iter = iter(train_loader)
 
+    # iterate through the DataLoader to debug indexing across shard boundaries:
     iters = len(train_loader)
     for i in range(iters):
         X, y = next(train_iter)
-        print(f"\rshard_idx: {train_loader.dataset.shard_idx} | self.idx: {train_loader.dataset.idx} | batch: {i + 1:,}/{iters:,} | {X.shape, y.shape}", end="") 
+        progress_str = (
+            f"\rshard_idx: {train_loader.dataset.shard_idx} | "
+            f"self.idx: {train_loader.dataset.idx} | "
+            f"batch: {i + 1:,}/{iters:,} | "
+            f"{X.shape, y.shape}"
+        )
+        print(progress_str, end="") 
 
+    #-------------------------------------------------------
+    # ----- DataLoader examples with TinyShakespeare ----- #
+
+    # chunk_sampling = False      # batch processing method
+
+    # if chunk_sampling:
+    #     print(f"\nutilising chunk sampling (non-overlapping batches)")
+    #     train_loader = DataLoader(
+    #         TinyShakespeare(block_size=1024, batch_size=16),
+    #         batch_size=None,    # must be set to None
+    #         shuffle=False,
+    #     )
+    # else:
+    #     print(f"\nutilising overlapping samples across batches")
+    #     train_loader = DataLoader(
+    #         TinyShakespeare(block_size),    # NO specified batch_size within Dataset class
+    #         batch_size=batch_size,          # specify DataLoader batch size parameter
+    #         shuffle=False
+    #     )
+    # print(f"\ntokens per batch: {batch_size * block_size:,} (batch size {batch_size:,})")
+    # print(f"{len(train_loader):,} available batches per epoch")
+    
+    # X, y = next(iter(train_loader))
+    # print(X.shape, y.shape)             # shape --> [batch_size, block_size]
+
+    # # --- Usage with DistributedSampler:
+
+    # print(f"\nusing DistributedSampler with DataLoader..")
+    # train_dataset = TinyShakespeare(        # load custom Dataset class for training
+    #     block_size=block_size,
+    #     verbose=False
+    # )
+    # train_sampler = DistributedSampler(     # for DDP: divides the dataset into equal-sized chunks across all GPUs (processes)
+    #     train_dataset,
+    #     num_replicas=8,                     # total no. of processes (using 8 GPUs as an example)
+    #     rank=0,                             # current GPU integer ID (using the first GPU as an example)
+    #     shuffle=True
+    # )
+    # train_loader_wDS = DataLoader(
+    #     train_dataset,
+    #     batch_size=batch_size,
+    #     sampler=train_sampler,              # WITH DistributedSampler
+    # )
+    # train_loader= DataLoader(               # WITHOUT Distributed
+    #     train_dataset,
+    #     batch_size=batch_size,
+    #     shuffle=True,                       
+    # )
+    # print("\navailable batches per epoch: ", end="")
+    # print(f"{len(train_loader):,} (without) | {len(train_loader_wDS):,} (with)")
