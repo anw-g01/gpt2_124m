@@ -144,7 +144,7 @@ class FineWebEdu(Dataset):
 
 if __name__ == "__main__":
 
-    batch_size = 64             # samples per forward pass
+    batch_size = 16             # samples per forward pass
     block_size = 1024           # context length
 
     # ----- DataLoader EXAMPLES with FineWebEdu Sample-10BT ----- #
