@@ -26,8 +26,7 @@ LOCAL_DIR       = "fineweb-edu-10BT"                # directory to store data sh
 DATASET_NAME    = "HuggingFaceFW/fineweb-edu"       # HuggingFace dataset name
 REMOTE_NAME     = "sample-10BT"                     # specific subset
 SHARD_SIZE      = int(1e8)                          # 100M tokens/shard except last shard (100 total shards)
-TOTAL_TOKENS    = 9_982_590_278                     # total tokens in sample-10BT subset
-LAST_SHARD_SIZE = 82_590_278                        # last shard has fewer tokens
+TOTAL_TOKENS    = 9.9e9                             # 9.9B total tokens used from sample-10BT subset
 DATA_CACHE_DIR  = os.path.join(os.path.dirname(__file__), LOCAL_DIR)    # construct a full path to the local data cache directory
 ENCODER         = tiktoken.get_encoding("gpt2")                         # initialise GPT-2 tokenizer 
 EOT             = ENCODER._special_tokens["<|endoftext|>"]              # end-of-text (EOT) token 
@@ -136,9 +135,11 @@ def main() -> None:
                 arr[: len(tokens) - remaining] = tokens[remaining:]
                 shard_tokens = len(tokens) - remaining      # reset token count to start with leftovers
 
+        # Ignoring last shard with 82_590_278 tokens for simplicity
+
         # write any further remaining tokens as the last shard
-        if shard_tokens != 0:
-            write_datafile(arr[:shard_tokens], shard_idx)      # last shard holds 82,590,278 tokens (not 100M)
+        # if shard_tokens != 0:
+        #     write_datafile(arr[:shard_tokens], shard_idx)      # last shard holds 82,590,278 tokens (not 100M)
 
 if __name__ == "__main__":
     main()
