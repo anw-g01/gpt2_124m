@@ -78,7 +78,7 @@ class FineWebEdu(Dataset):
         self.block_size = block_size    # context (sequence) length
         self.root       = dir           # specify directory where the data shards are stored in config.py
         self.shards = self._get_shard_paths(split)    # load shards from directory based on split
-        self.cache      = {}            # cache for loaded shards
+        self.cache      = {}            # cache for validation set only
 
     def _get_shard_paths(self, split):
         """Get shard file names from the root directory (based on the split) to construct their full paths."""
@@ -94,6 +94,7 @@ class FineWebEdu(Dataset):
         path = self.shards[shard_idx]       # get the full shard path
         if path in self.cache:              # check if shard is already loaded
             return self.cache[path]         # return the cached shard
+        self.cache = {}                     # clear the cache (high memory consumption)
         arr = np.load(path)                             # load the shard as a numpy array
         tokens = torch.tensor(arr, dtype=torch.long)    # convert to PyTorch tensor with int64 dtype
         self.cache[path] = tokens                       # cache the loaded shard
@@ -109,8 +110,8 @@ class FineWebEdu(Dataset):
         tokens = self._load_shard(shard_idx)                        # load the corresponding shard tokens
 
         if local_idx + chunk_size >= tokens.shape[0]:           # if the current shard is exhausted
-            X1 = tokens[idx:]                                   # store available tokens of current shard
-            y1 = tokens[idx + 1:]                               # corresponding target sequence (next token for each sample)
+            X1 = tokens[local_idx:]                             # store available tokens of current shard
+            y1 = tokens[local_idx + 1:]                         # corresponding target sequence (next token for each sample)
             shard_idx = (shard_idx + 1) % len(self.shards)      # move to the next shard (circular indexing)
             tokens = self._load_shard(shard_idx)                # load the next shard
             rem = chunk_size - X1.shape[0]                      # remaining tokens needed for X to complete the chunk 
@@ -119,17 +120,17 @@ class FineWebEdu(Dataset):
                 X = X1                              # X is unchanged 
                 y2 = tokens[:1]                     # y is missing one token (due to starting index +1)
                 y = torch.cat((y1, y2), dim=0)      # concatenate y tensor
-            elif rem > 0:                           # if X and y both need to be filled
+            if rem > 0:                             # if X and y both need to be filled
                 X2 = tokens[: rem]                  # get the remaining tokens from next shard to complete chunk
                 y2 = tokens[: rem + 1]              # corresponding target sequence
                 X = torch.cat((X1, X2), dim=0)      # concatenate X
                 y = torch.cat((y1, y2), dim=0)      # concatenate y  
             else:
                 X, y = X1, y1                       # X, y are unchanged (already filled)
-        
-        else:   # normal case (no shard boundary crossing)
-            X = tokens[idx: idx + chunk_size]                # get the input sequence
-            y = tokens[idx + 1: idx + chunk_size + 1]        # get the target sequence (next token for each sample)
+        else:                                                   # normal case (no shard boundary crossing)
+            X = tokens[idx: idx + chunk_size]                   # get the input sequence
+            y = tokens[idx + 1: idx + chunk_size + 1]           # get the target sequence (next token for each sample)
+
         return X.view(self.batch_size, -1), y.view(self.batch_size, -1)     # return with shapes [batch_size, block_size]
 
     def __len__(self):
@@ -140,7 +141,7 @@ class FineWebEdu(Dataset):
         """
         if self.split == "val":
             return SHARD_SIZE // (self.batch_size * self.block_size)
-        return (TOTAL_TOKENS // (self.batch_size * self.block_size)) - SHARD_SIZE 
+        return ((TOTAL_TOKENS - SHARD_SIZE) // (self.batch_size * self.block_size)) 
 
 
 if __name__ == "__main__":
@@ -155,10 +156,10 @@ if __name__ == "__main__":
         FineWebEdu(
             batch_size=batch_size,
             block_size=block_size,
-            split="val"
+            split="train"
         ),
         batch_size=None,    # must be set to None
-        shuffle=True,
+        shuffle=False,      # iterate through shards sequentially if shuffling=False
     )
 
     print(f"\ntokens per batch: {batch_size * block_size:,} (batch size {batch_size:,})")
