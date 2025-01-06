@@ -168,9 +168,17 @@ if __name__ == "__main__":
     print(f"{len(train_loader):,} available batches per epoch\n")
     
     def cycle(iterable):
-        while True:
-            for x in iterable:
-                yield x
+        """
+        Infinitely cycles over an iterable object (e.g. a `DataLoader`) using a generator.
+        Used over `itertools.cycle()` to prevent memory leaks for large datasets like `FineWebEdu()`.
+        See: https://github.com/pytorch/pytorch/issues/23900
+        """
+        iterator = iter(iterable)
+        while True:                         
+            try:    
+                yield next(iterator)        # yield the next item in the iterator
+            except StopIteration:           # iterator reaches the end
+                iterator = iter(iterable)   # reset the iterator 
 
     train_iter = iter(train_loader)
 
