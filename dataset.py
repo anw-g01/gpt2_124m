@@ -4,8 +4,6 @@ import tiktoken
 import numpy as np
 import os
 from config import DATA_ROOT
-
-# total no. of tokens in FineWebEdu sample-10BT: 9_982_590_278
 from fineweb import SHARD_SIZE    
 
 class TinyShakespeare(Dataset):
@@ -116,6 +114,7 @@ class FineWebEdu(Dataset):
             shard_idx = (shard_idx + 1) % len(self.shards)      # move to the next shard (circular indexing)
             tokens = self._load_shard(shard_idx)                # load the next shard
             rem = chunk_size - X1.shape[0]                      # remaining tokens needed for X to complete the chunk 
+            
             if rem == 0:                            # if X was exactly filled but y wasn't
                 X = X1                              # X is unchanged 
                 y2 = tokens[:1]                     # y is missing one token (due to starting index +1)
@@ -127,6 +126,7 @@ class FineWebEdu(Dataset):
                 y = torch.cat((y1, y2), dim=0)      # concatenate y  
             else:
                 X, y = X1, y1                       # X, y are unchanged (already filled)
+
         else:                                                   # normal case (no shard boundary crossing)
             X = tokens[idx: idx + chunk_size]                   # get the input sequence
             y = tokens[idx + 1: idx + chunk_size + 1]           # get the target sequence (next token for each sample)
@@ -144,7 +144,7 @@ class FineWebEdu(Dataset):
 
 if __name__ == "__main__":
 
-    batch_size = 16             # samples per forward pass
+    batch_size = 64             # samples per forward pass
     block_size = 1024           # context length
 
     # ----- DataLoader EXAMPLES with FineWebEdu Sample-10BT ----- #
@@ -159,7 +159,7 @@ if __name__ == "__main__":
     train_loader = DataLoader(
         train_dataset,
         batch_size=None,            # must be set to None
-        # sampler=train_sampler,      # using a DistributedSampler
+        sampler=train_sampler,      # using a DistributedSampler
         pin_memory=True,
         shuffle=False
     )
@@ -175,7 +175,7 @@ if __name__ == "__main__":
     train_iter = iter(train_loader)
 
     # example traversal through on epoch of the DataLoader
-    n = len(train_loader) * 2
+    n = len(train_loader)
     for i in range(n):
         X, y = next(train_iter)
         progress_str = (
