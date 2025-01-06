@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from torch.distributed import init_process_group, destroy_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
-
+from model import GPT2_124M, GPT2Config
 
 def initialise_ddp() -> tuple:
     """
@@ -86,12 +86,13 @@ def train() -> tuple:
         batches_per_epoch_val= int(math.ceil(len(val_loader) / VAL_ACCUM_STEPS))
         print(f"batches per epoch: {batches_per_epoch_val:,} ({len(val_loader):,} mini-batches)")
 
+        import sys; sys.exit()      # currently exiting early for TESTING purposes
+
     # ---------- MODEL INSTANCE ---------- #
 
         print(f"\nloading model, optimiser and scheduler...\n")
         print(f"no. of model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
 
-    import sys; sys.exit()      # currently exiting early for TESTING purposes
 
     model = GPT2_124M(GPT2Config(vocab_size=50304)).to(DEVICE)     # increase vocab size to (2^7 * 3 * 131)
     optimiser = model.configure_optim(WEIGHT_DECAY, LEARNING_RATE, DEVICE.type)
@@ -228,7 +229,7 @@ def load_fineweb(ddp_world_size: int, ddp_rank: int) -> tuple:
     # validation dataset:
     val_dataset = FineWebEdu(BATCH_SIZE, BLOCK_SIZE, split="val")
     val_sampler = DistributedSampler(
-        train_dataset,
+        val_dataset,
         num_replicas=ddp_world_size,
         rank=ddp_rank,
         shuffle=False
