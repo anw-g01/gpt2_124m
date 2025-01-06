@@ -85,8 +85,8 @@ class FineWebEdu(Dataset):
         shards = [os.path.join(self.root, f) for f in names]               # construct full paths, sorted by name (ascending order)
         assert len(shards) > 0, f"no shards found for split='{split}' in {self.root}"
         if self.verbose:
-            print(f"found {len(shards):,} shards for '{split}' split")
-            print(f"total tokens: {len(shards) * SHARD_SIZE:,}")
+            n = len(shards) * SHARD_SIZE * 1e-9
+            print(f'found {len(shards):,} shard(s) for "{split}" split -> ({n:.2f} B tokens)')
         return shards   # return list of full paths to shards
 
     def _load_shard(self, shard_idx: int):
@@ -180,7 +180,7 @@ if __name__ == "__main__":
         X, y = next(train_iter)
         progress_str = (
             f"\rbatch: {i + 1:,}/{n:,} | "
-            f"{X.shape, y.shape}"
+            # f"{X.shape, y.shape}"
         )
         print(progress_str, end="")
 
