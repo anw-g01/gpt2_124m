@@ -1,7 +1,6 @@
 import torch
 from torch import nn
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from itertools import cycle     # creates an infinitely looping cycle over an iterator
 import matplotlib.pyplot as plt
 import numpy as np
 import math
@@ -35,7 +34,7 @@ def initialise_ddp() -> tuple:
         ddp_rank, ddp_local_rank, ddp_world_size = 0, 0, 1  # fallback for non-DDP setup
         master_process = True
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"using single device: {device}")
+        print(f"\nusing single device: {device}")
     return ddp_rank, ddp_local_rank, ddp_world_size, device, master_process
 
 
@@ -68,31 +67,58 @@ def train() -> tuple:
     # ---------- LOAD DATA ---------- # 
 
     # train_loader, val_loader = load_shakespeare(DDP_WORLD_SIZE, DDP_LOCAL_RANK)    # load training and validation data
-    
+    DDP_WORLD_SIZE = 8
+
     train_loader, val_loader = load_fineweb(DDP_WORLD_SIZE, DDP_LOCAL_RANK)    # load training and validation data
-    train_iter, val_iter = cycle(train_loader), cycle(val_loader)                  # create infinite iterators
-
+    train_iter, val_iter = cycle(train_loader), cycle(val_loader)              # create infinite iterators
+    
     if MASTER_PROCESS:    # print in command window for only one GPU
-        print("\n*-------------- TRAINING --------------*")
-        print(f"training tokens per batch: {TOKENS_PER_BATCH:,}")
-        GRAD_ACCUM_STEPS = int(TOKENS_PER_BATCH / (BATCH_SIZE * BLOCK_SIZE * DDP_WORLD_SIZE))
-        print(f"mini-batch size: {BATCH_SIZE} ({GRAD_ACCUM_STEPS} accumulation steps)")
-        batches_per_epoch_train = int(math.ceil(len(train_loader) / GRAD_ACCUM_STEPS))
-        print(f"batches per epoch: {batches_per_epoch_train:,} ({len(train_loader):,} mini-batches)")   # displays available batches for one epoch
+        # print("\n*-------------- TRAINING --------------*")
+        # print(f"effective batch: {TOKENS_PER_BATCH:,} tokens")
+        
+        # tok_per_gpu = BATCH_SIZE * BLOCK_SIZE   # tokens processed per GPU per mini-batch
+        # GRAD_ACCUM_STEPS = int(TOKENS_PER_BATCH // (tok_per_gpu * DDP_WORLD_SIZE))  
+        # print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}] ({GRAD_ACCUM_STEPS} acc. steps)")
+        # total_batches = len(train_loader) * DDP_WORLD_SIZE
+        # chunks_per_epoch_train = int(math.ceil(total_batches / (GRAD_ACCUM_STEPS * DDP_WORLD_SIZE)))
+        # print(f"DataLoader batches: {total_batches:,} ({len(train_loader):,} per GPU)")
+        # print(f"=> {chunks_per_epoch_train:,} chunks/epoch")
 
-        print("\n*-------------- VALIDATION --------------*")
-        print(f"validation tokens per batch: {BATCH_SIZE * BLOCK_SIZE * VAL_ACCUM_STEPS:,}")
-        print(f"mini-batch size: {BATCH_SIZE} ({VAL_ACCUM_STEPS} accumulation steps)")
-        batches_per_epoch_val= int(math.ceil(len(val_loader) / VAL_ACCUM_STEPS))
-        print(f"batches per epoch: {batches_per_epoch_val:,} ({len(val_loader):,} mini-batches)")
 
-        import sys; sys.exit()      # currently exiting early for TESTING purposes
+        # print("\n*-------------- VALIDATION --------------*")
+        # val_effective_batch = BATCH_SIZE * BLOCK_SIZE * VAL_ACCUM_STEPS * DDP_WORLD_SIZE
+        # print(f"effective batch: {val_effective_batch:,} tokens")
+        # print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}] ({VAL_ACCUM_STEPS} acc. steps)")
+        # total_val_batches = len(val_loader) * DDP_WORLD_SIZE
+        # chunks_per_epoch_val = int(math.ceil(total_val_batches / (VAL_ACCUM_STEPS * DDP_WORLD_SIZE)))
+        # print(f"DataLoader batches: {total_val_batches:,} ({len(val_loader):,} per GPU)")
+        # print(f"=> {chunks_per_epoch_val:,} chunks/epoch")
+
+        if MASTER_PROCESS:    # print in command window for only one GPU
+            print("\n*-------------- TRAINING --------------*")
+            print(f"effective batch: {TOKENS_PER_BATCH:,} tokens")
+            
+            tok_per_gpu = BATCH_SIZE * BLOCK_SIZE   # tokens processed per GPU per mini-batch
+            GRAD_ACCUM_STEPS = int(TOKENS_PER_BATCH // (tok_per_gpu * DDP_WORLD_SIZE))  
+            print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}] ({GRAD_ACCUM_STEPS} acc. steps)")
+            total_batches = len(train_loader) * DDP_WORLD_SIZE
+            chunks_per_epoch_train = int(math.ceil(total_batches / (GRAD_ACCUM_STEPS * DDP_WORLD_SIZE)))
+            chunks_per_gpu = int(math.ceil(chunks_per_epoch_train / DDP_WORLD_SIZE))
+            print(f"DataLoader batches: {total_batches:,} ({len(train_loader):,} per GPU)")
+            print(f"=> {chunks_per_epoch_train:,} chunks/epoch ({chunks_per_gpu:,} per GPU)")
+
+            print("\n*-------------- VALIDATION --------------*")
+            val_effective_batch = BATCH_SIZE * BLOCK_SIZE * VAL_ACCUM_STEPS * DDP_WORLD_SIZE
+            print(f"effective batch: {val_effective_batch:,} tokens")
+            print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}] ({VAL_ACCUM_STEPS} acc. steps)")
+            total_val_batches = len(val_loader) * DDP_WORLD_SIZE
+            chunks_per_epoch_val = int(math.ceil(total_val_batches / (VAL_ACCUM_STEPS * DDP_WORLD_SIZE)))
+            val_chunks_per_gpu = int(math.ceil(chunks_per_epoch_val / DDP_WORLD_SIZE))
+            print(f"DataLoader batches: {total_val_batches:,} ({len(val_loader):,} per GPU)")
+            print(f"=> {chunks_per_epoch_val:,} chunks/epoch ({val_chunks_per_gpu:,} per GPU)")
 
     # ---------- MODEL INSTANCE ---------- #
-
         print(f"\nloading model, optimiser and scheduler...\n")
-        print(f"no. of model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
-
 
     model = GPT2_124M(GPT2Config(vocab_size=50304)).to(DEVICE)     # increase vocab size to (2^7 * 3 * 131)
     optimiser = model.configure_optim(WEIGHT_DECAY, LEARNING_RATE, DEVICE.type)
@@ -101,12 +127,15 @@ def train() -> tuple:
         T_max=(MAX_STEPS - WARMUP_STEPS),   # decay starts after warmup
         eta_min=0.1*LEARNING_RATE           # minimum learning rate
     )
-    if MASTER_PROCESS:
-        print(f"\ncompiling model...")
+    
     model = torch.compile(model)    
     if DDP_WORLD_SIZE > 1:                                          # if using DDP
         model = DDP(model, device_ids=[DDP_LOCAL_RANK])             # wrap model in a PyTorch DDP container
     # raw_model = model.module if DDP_WORLD_SIZE > 1 else model     # to access the "raw" unwrapped model
+
+    if MASTER_PROCESS:
+        print(f"\ncompiling model...")
+        print(f"no. of model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
 
     # ---------- MAIN TRAINING LOOP ---------- # 
 
@@ -117,6 +146,8 @@ def train() -> tuple:
         val_losses = np.full(ITERATIONS, np.nan)    # initialise with NaNs (due to interval usage)
         learning_rates = np.empty(ITERATIONS)
 
+    import sys; sys.exit()      # currently exiting early for TESTING purposes
+    
     for i in range(ITERATIONS):     # not using set_epoch() since iterations are used over epochs
 
         if MASTER_PROCESS:          # capture starting time for stats (master process only)
@@ -142,8 +173,8 @@ def train() -> tuple:
                         loss.backward()
             else:
                 loss.backward()                 # no syncrhonisation for a single GPU
-        if DDP_WORLD_SIZE > 1:                              # calculate and synchronise the average loss across all GPUs
-            dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)    # all_reduce places the same final averaged result back on all GPUs
+        if DDP_WORLD_SIZE > 1:                                      # calculate and synchronise the average loss across all GPUs
+            dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)       # all_reduce places the same final averaged result back on all GPUs
         norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)           # gradient clipping
         optimiser.step()                                                            # update parameters after GRAD_ACCUM_STEPS
 
@@ -197,10 +228,23 @@ def train() -> tuple:
                 )
                 print(progress_str, end="")
     if MASTER_PROCESS:
-        print("\n\nTraining Complete.")
+        print("\n\nTraining Complete.")     # print completion message
     if DDP_WORLD_SIZE > 1:
-        destroy_process_group()
+        destroy_process_group()             # clean up DDP process group
     return model, train_losses, val_losses, learning_rates
+
+
+def cycle(iterable):
+    """
+    Infinitely cycles over an iterable object (e.g. a `DataLoader`) using a generator.
+    Used over `itertools.cycle()` to prevent memory leaks for large datasets like `FineWebEdu()`.
+    """
+    iterator = iter(iterable)
+    while True:                         
+        try:    
+            yield next(iterator)        # yield the next item in the iterator
+        except StopIteration:           # iterator reaches the end
+            iterator = iter(iterable)   # reset the iterator
 
 
 def load_fineweb(ddp_world_size: int, ddp_rank: int) -> tuple:
@@ -211,7 +255,8 @@ def load_fineweb(ddp_world_size: int, ddp_rank: int) -> tuple:
     amongst GPU processes which independently handles its batch of shard loading and processing. 
 
     All shuffling must be set to False to prevent constant shard loading. Utilising `self.cache()` to
-    store the current shard being processed improves continuous iteration until the next shard.
+    store the current shard being processed improves continuous iteration until the next shard. This
+    is not the case for the validation set which only occurs over one shard file.
     """
     train_dataset = FineWebEdu(BATCH_SIZE, BLOCK_SIZE, split="train")
     train_sampler = DistributedSampler(
@@ -232,7 +277,7 @@ def load_fineweb(ddp_world_size: int, ddp_rank: int) -> tuple:
         val_dataset,
         num_replicas=ddp_world_size,
         rank=ddp_rank,
-        shuffle=False
+        shuffle=True        # shuffling does not affect speed as only one shard is loaded
     )
     val_loader = DataLoader(
         val_dataset,
