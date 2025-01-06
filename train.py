@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import math
 import time
-from dataset import TinyShakespeare
+from dataset import TinyShakespeare, FineWebEdu
 from config import *    # import all global variables (all in caps)
 import os
 from torch.utils.data import DataLoader, DistributedSampler
@@ -67,7 +67,9 @@ def train() -> tuple:
 
     # ---------- LOAD DATA ---------- # 
 
-    train_loader, val_loader = load_shakespeare(DDP_WORLD_SIZE, DDP_LOCAL_RANK)    # load training and validation data
+    # train_loader, val_loader = load_shakespeare(DDP_WORLD_SIZE, DDP_LOCAL_RANK)    # load training and validation data
+    
+    train_loader, val_loader = load_fineweb(DDP_WORLD_SIZE, DDP_LOCAL_RANK)    # load training and validation data
     train_iter, val_iter = cycle(train_loader), cycle(val_loader)                  # create infinite iterators
 
     if MASTER_PROCESS:    # print in command window for only one GPU
@@ -201,12 +203,48 @@ def train() -> tuple:
 
 
 def load_fineweb(ddp_world_size: int, ddp_rank: int) -> tuple:
-    pass
+    """
+    Loads training and validation `DataLoader` (PyTorch) objects for the `FineWebEdu()` dataset.
+
+    For DDP, a `DistributedSampler` splits all available `global_idx` indicies (defined in `__len__`)
+    amongst GPU processes which independently handles its batch of shard loading and processing. 
+
+    All shuffling must be set to False to prevent constant shard loading. Utilising `self.cache()` to
+    store the current shard being processed improves continuous iteration until the next shard.
+    """
+    train_dataset = FineWebEdu(BATCH_SIZE, BLOCK_SIZE, split="train")
+    train_sampler = DistributedSampler(
+        train_dataset,
+        num_replicas=ddp_world_size,
+        rank=ddp_rank,
+        shuffle=False
+    )
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=None,            # must be set to None
+        sampler=train_sampler,      # using a DistributedSampler
+        pin_memory=True,
+    )
+    # validation dataset:
+    val_dataset = FineWebEdu(BATCH_SIZE, BLOCK_SIZE, split="val")
+    val_sampler = DistributedSampler(
+        train_dataset,
+        num_replicas=ddp_world_size,
+        rank=ddp_rank,
+        shuffle=False
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=None,
+        sampler=val_sampler,
+        pin_memory=True,
+    )
+    return train_loader, val_loader
 
 
 def load_shakespeare(ddp_world_size: int, ddp_rank: int) -> tuple:
     """
-    Loads training and validation `DataLoader` (PyTorch) objects for the `TinyShakespeare()` `Dataset`.
+    Loads training and validation `DataLoader` (PyTorch) objects for the `TinyShakespeare()` dataset.
     For DDP, training data is split into equal-sized chunks across all GPUs (processes) using `DistributedSampler`.
     """
     print(f"\nloading data...\n")
