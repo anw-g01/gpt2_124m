@@ -2,15 +2,6 @@
 https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu
 Process the FineWeb-Edu Sample-10BT dataset by tokenzing documents and saving them in fixed-size shards.
 Each shard is saved as a NumPy array with 100M tokens (available space), of data type `uint16`.
-
->> python fineweb.py
-total no. of rows in dataset: 9,672,101
-total no. of tokens to process: 9,982,590,278 (~1,032 tok/doc)
-no. of shards: 100 (with SHARD_SIZE=100M)
-
-using 4 CPU cores for tokenization...
-
-processing shard 56/100 | [====>-----] 5.53B/9.98B (55.4% complete) | [14:37<27:23, 4.25M tok/sec]  
 """
 
 import numpy as np
