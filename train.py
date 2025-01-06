@@ -67,32 +67,11 @@ def train() -> tuple:
     # ---------- LOAD DATA ---------- # 
 
     # train_loader, val_loader = load_shakespeare(DDP_WORLD_SIZE, DDP_LOCAL_RANK)    # load training and validation data
-    DDP_WORLD_SIZE = 8
 
     train_loader, val_loader = load_fineweb(DDP_WORLD_SIZE, DDP_LOCAL_RANK)    # load training and validation data
     train_iter, val_iter = cycle(train_loader), cycle(val_loader)              # create infinite iterators
     
     if MASTER_PROCESS:    # print in command window for only one GPU
-        # print("\n*-------------- TRAINING --------------*")
-        # print(f"effective batch: {TOKENS_PER_BATCH:,} tokens")
-        
-        # tok_per_gpu = BATCH_SIZE * BLOCK_SIZE   # tokens processed per GPU per mini-batch
-        # GRAD_ACCUM_STEPS = int(TOKENS_PER_BATCH // (tok_per_gpu * DDP_WORLD_SIZE))  
-        # print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}] ({GRAD_ACCUM_STEPS} acc. steps)")
-        # total_batches = len(train_loader) * DDP_WORLD_SIZE
-        # chunks_per_epoch_train = int(math.ceil(total_batches / (GRAD_ACCUM_STEPS * DDP_WORLD_SIZE)))
-        # print(f"DataLoader batches: {total_batches:,} ({len(train_loader):,} per GPU)")
-        # print(f"=> {chunks_per_epoch_train:,} chunks/epoch")
-
-
-        # print("\n*-------------- VALIDATION --------------*")
-        # val_effective_batch = BATCH_SIZE * BLOCK_SIZE * VAL_ACCUM_STEPS * DDP_WORLD_SIZE
-        # print(f"effective batch: {val_effective_batch:,} tokens")
-        # print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}] ({VAL_ACCUM_STEPS} acc. steps)")
-        # total_val_batches = len(val_loader) * DDP_WORLD_SIZE
-        # chunks_per_epoch_val = int(math.ceil(total_val_batches / (VAL_ACCUM_STEPS * DDP_WORLD_SIZE)))
-        # print(f"DataLoader batches: {total_val_batches:,} ({len(val_loader):,} per GPU)")
-        # print(f"=> {chunks_per_epoch_val:,} chunks/epoch")
 
         if MASTER_PROCESS:    # print in command window for only one GPU
             print("\n*-------------- TRAINING --------------*")
