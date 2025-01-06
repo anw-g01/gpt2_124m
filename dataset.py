@@ -122,7 +122,6 @@ class FineWebEdu(Dataset):
             shard_idx = (shard_idx + 1) % len(self.shards)      # move to the next shard (circular indexing)
             tokens = self._load_shard(shard_idx)                # load the next shard
             rem = chunk_size - X1.shape[0]                      # remaining tokens needed for X to complete the chunk 
-            
             if rem == 0:                            # if X was exactly filled but y wasn't
                 X = X1                              # X is unchanged 
                 y2 = tokens[:1]                     # y is missing one token (due to starting index +1)
@@ -138,6 +137,7 @@ class FineWebEdu(Dataset):
         else:                                                   # normal case (no shard boundary crossing)
             X = tokens[idx: idx + chunk_size]                   # get the input sequence
             y = tokens[idx + 1: idx + chunk_size + 1]           # get the target sequence (next token for each sample)
+
         return X.view(self.batch_size, -1), y.view(self.batch_size, -1)     # return with shapes [batch_size, block_size]
 
     def __len__(self):
@@ -162,7 +162,7 @@ if __name__ == "__main__":
     train_sampler = DistributedSampler(
         train_dataset,
         num_replicas=8,
-        rank=1,
+        rank=0,
         shuffle=False
     )
     train_loader = DataLoader(
@@ -170,20 +170,25 @@ if __name__ == "__main__":
         batch_size=None,            # must be set to None
         # sampler=train_sampler,      # using a DistributedSampler
         pin_memory=True,
+        shuffle=False
     )
 
     print(f"\ntokens per batch: {batch_size * block_size:,} (batch size {batch_size:,})")
     print(f"{len(train_loader):,} available batches per epoch\n")
     
-    train_iter = iter(train_loader)
+    def cycle(iterable):
+        while True:
+            for x in iterable:
+                yield x
+
+    train_iter = iter(cycle(train_loader))
 
     # example traversal through on epoch of the DataLoader
-    n = len(train_loader) + (16 * 1024)
+    n = len(train_loader) * 2
     for i in range(n):
         X, y = next(train_iter)
         progress_str = (
             f"\rbatch: {i + 1:,}/{n:,} | "
-            f"{X.shape, y.shape} | "
         )
         print(progress_str, end="") 
 
