@@ -109,7 +109,7 @@ class FineWebEdu(Dataset):
         local_idx = global_idx % SHARD_SIZE                         # index within a shard
         tokens = self._load_shard(shard_idx)                        # load the corresponding shard tokens
 
-        if local_idx + chunk_size >= tokens.shape[0]:           # if the current shard is exhausted
+        if local_idx + chunk_size >= tokens.shape[0]:           # if the current shard will be exhausted
             X1 = tokens[local_idx:]                             # store available tokens of current shard
             y1 = tokens[local_idx + 1:]                         # corresponding target sequence (next token for each sample)
             shard_idx = (shard_idx + 1) % len(self.shards)      # move to the next shard (circular indexing)
@@ -120,7 +120,7 @@ class FineWebEdu(Dataset):
                 X = X1                              # X is unchanged 
                 y2 = tokens[:1]                     # y is missing one token (due to starting index +1)
                 y = torch.cat((y1, y2), dim=0)      # concatenate y tensor
-            if rem > 0:                             # if X and y both need to be filled
+            elif rem > 0:                           # if X and y both need to be filled
                 X2 = tokens[: rem]                  # get the remaining tokens from next shard to complete chunk
                 y2 = tokens[: rem + 1]              # corresponding target sequence
                 X = torch.cat((X1, X2), dim=0)      # concatenate X
@@ -131,6 +131,7 @@ class FineWebEdu(Dataset):
             X = tokens[idx: idx + chunk_size]                   # get the input sequence
             y = tokens[idx + 1: idx + chunk_size + 1]           # get the target sequence (next token for each sample)
 
+            print(f">> {shard_idx=}, {local_idx=:,}, {rem=:,}")
         return X.view(self.batch_size, -1), y.view(self.batch_size, -1)     # return with shapes [batch_size, block_size]
 
     def __len__(self):
@@ -151,15 +152,18 @@ if __name__ == "__main__":
 
     # ----- DataLoader EXAMPLES with FineWebEdu Sample-10BT ----- #
 
-    print(f"creating DataLoader for FineWebEdu Sample-10BT dataset..\n")
+    train_dataset = FineWebEdu(batch_size, block_size, split="train")
+    train_sampler = DistributedSampler(
+        train_dataset,
+        num_replicas=8,
+        rank=0,
+        shuffle=False
+    )
     train_loader = DataLoader(
-        FineWebEdu(
-            batch_size=batch_size,
-            block_size=block_size,
-            split="train"
-        ),
-        batch_size=None,    # must be set to None
-        shuffle=False,      # iterate through shards sequentially if shuffling=False
+        train_dataset,
+        batch_size=None,            # must be set to None
+        sampler=train_sampler,      # using a DistributedSampler
+        pin_memory=True,
     )
 
     print(f"\ntokens per batch: {batch_size * block_size:,} (batch size {batch_size:,})")
@@ -167,15 +171,42 @@ if __name__ == "__main__":
     
     train_iter = iter(train_loader)
 
-    # iterate through the DataLoader to debug indexing across shard boundaries:
-    iters = len(train_loader)
-    for i in range(iters):
+    local_idx = 99_983_616
+
+    # example traversal through on epoch of the DataLoader
+    n = len(train_loader)
+    for i in range(n):
         X, y = next(train_iter)
         progress_str = (
-            f"\rbatch: {i + 1:,}/{iters:,} | "
-            f"{X.shape, y.shape}"
+            f"\rbatch: {i + 1:,}/{n:,} | "
+            f"{X.shape, y.shape} | "
         )
         print(progress_str, end="") 
+
+
+    # ----- DataLoader EXAMPLES with FineWebEdu Sample-10BT ----- #
+
+    # print(f"creating DataLoader for FineWebEdu Sample-10BT dataset..\n")
+    # train_loader = DataLoader(
+    #     FineWebEdu(batch_size, block_size, split="train"),
+    #     batch_size=None,    # must be set to None
+    #     shuffle=False,      # iterate through shards sequentially if shuffling=False
+    # )
+
+    # print(f"\ntokens per batch: {batch_size * block_size:,} (batch size {batch_size:,})")
+    # print(f"{len(train_loader):,} available batches per epoch\n")
+    
+    # train_iter = iter(train_loader)
+
+    # # example traversal through on epoch of the DataLoader
+    # n = len(train_loader)
+    # for i in range(n):
+    #     X, y = next(train_iter)
+    #     progress_str = (
+    #         f"\rbatch: {i + 1:,}/{n:,} | "
+    #         f"{X.shape, y.shape}"
+    #     )
+    #     print(progress_str, end="") 
 
     #-------------------------------------------------------
     # ----- DataLoader examples with TinyShakespeare ----- #
