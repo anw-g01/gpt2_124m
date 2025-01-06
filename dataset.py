@@ -78,6 +78,7 @@ class FineWebEdu(Dataset):
         self.block_size = block_size    # context (sequence) length
         self.root       = dir           # specify directory where the data shards are stored in config.py
         self.shards = self._get_shard_paths(split)    # load shards from directory based on split
+        self.cache      = {}            # cache for loaded shards
 
     def _get_shard_paths(self, split):
         """Get shard file names from the root directory (based on the split) to construct their full paths."""
@@ -91,8 +92,12 @@ class FineWebEdu(Dataset):
     def _load_shard(self, shard_idx: int):
         """Loads a single shard as a PyTorch tensor of tokens, based on the `shard_idx`."""
         path = self.shards[shard_idx]       # get the full shard path
-        tokens = np.load(path)              # load the shard as a numpy array
-        return torch.tensor(tokens, dtype=torch.long)   # convert to PyTorch tensor with int64 dtype
+        if path in self.cache:              # check if shard is already loaded
+            return self.cache[path]         # return the cached shard
+        arr = np.load(path)                             # load the shard as a numpy array
+        tokens = torch.tensor(arr, dtype=torch.long)    # convert to PyTorch tensor with int64 dtype
+        self.cache[path] = tokens                       # cache the loaded shard
+        return tokens
     
     def __getitem__(self, idx: int):
         """Returns a single batch of input and target sequences based on the current index."""
