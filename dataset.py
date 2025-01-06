@@ -4,7 +4,10 @@ import tiktoken
 import numpy as np
 import os
 from config import DATA_ROOT
-from fineweb import SHARD_SIZE, TOTAL_TOKENS    # total no. of tokens in FineWebEdu sample-10BT (9_982_590_278)
+
+# total no. of tokens in FineWebEdu sample-10BT: 9_982_590_278
+from fineweb import SHARD_SIZE, LAST_SHARD_SIZE, TOTAL_TOKENS    
+TRAIN_TOKENS = TOTAL_TOKENS - SHARD_SIZE    # total tokens in training set: 9_882_590_278
 
 
 class TinyShakespeare(Dataset):
@@ -104,10 +107,14 @@ class FineWebEdu(Dataset):
         """Returns a single batch of input and target sequences based on the current index."""
         chunk_size = self.batch_size * self.block_size              # chunk size (tokens in one batch)
         global_idx = idx * chunk_size                               # starting position (across all shards)
-        # determine corresponding shard index and local index:
-        shard_idx = global_idx // SHARD_SIZE                        # index of current shard file
-        local_idx = global_idx % SHARD_SIZE                         # index within a shard
+        # determine corresponding shard index from global index:
+        shard_idx = global_idx // SHARD_SIZE                        # get index of current shard file by the default shard size of 100M
         tokens = self._load_shard(shard_idx)                        # load the corresponding shard tokens
+        # determine local index within the shard:
+        if shard_idx == (len(self.shards) - 1):                         # if it's the last shard (which has <100M tokens)
+            local_idx = global_idx - (TRAIN_TOKENS - LAST_SHARD_SIZE)   # local index within the last shard after 9.8B tokens
+        else:
+            local_idx = global_idx % SHARD_SIZE                         # index within others shard (espeically for last index which has <100M tokens)
 
         if local_idx + chunk_size >= tokens.shape[0]:           # if the current shard will be exhausted
             X1 = tokens[local_idx:]                             # store available tokens of current shard
@@ -127,11 +134,10 @@ class FineWebEdu(Dataset):
                 y = torch.cat((y1, y2), dim=0)      # concatenate y  
             else:
                 X, y = X1, y1                       # X, y are unchanged (already filled)
+            # print(f"--> {shard_idx=}, {local_idx=:,}, {rem=:,}")   # print for debugging
         else:                                                   # normal case (no shard boundary crossing)
             X = tokens[idx: idx + chunk_size]                   # get the input sequence
             y = tokens[idx + 1: idx + chunk_size + 1]           # get the target sequence (next token for each sample)
-
-            print(f">> {shard_idx=}, {local_idx=:,}, {rem=:,}")
         return X.view(self.batch_size, -1), y.view(self.batch_size, -1)     # return with shapes [batch_size, block_size]
 
     def __len__(self):
@@ -156,13 +162,13 @@ if __name__ == "__main__":
     train_sampler = DistributedSampler(
         train_dataset,
         num_replicas=8,
-        rank=0,
+        rank=1,
         shuffle=False
     )
     train_loader = DataLoader(
         train_dataset,
         batch_size=None,            # must be set to None
-        sampler=train_sampler,      # using a DistributedSampler
+        # sampler=train_sampler,      # using a DistributedSampler
         pin_memory=True,
     )
 
@@ -171,10 +177,8 @@ if __name__ == "__main__":
     
     train_iter = iter(train_loader)
 
-    local_idx = 99_983_616
-
     # example traversal through on epoch of the DataLoader
-    n = len(train_loader)
+    n = len(train_loader) + (16 * 1024)
     for i in range(n):
         X, y = next(train_iter)
         progress_str = (
