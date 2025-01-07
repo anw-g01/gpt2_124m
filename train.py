@@ -172,7 +172,8 @@ def train() -> tuple:
             lr = scheduler.get_last_lr()[0]     # use param group 0
 
         # ----- VALIDATION LOOP ----- #
-        if i % VAL_INTERVAL == 0:           # run validation every VAL_INTERVAL iterations
+        # run validation every VAL_INTERVAL iterations OR on the final iteration
+        if (i % VAL_INTERVAL == 0) or (i == ITERATIONS - 1): 
             t0_val = time.time()
             model.eval()
             val_loss = 0
