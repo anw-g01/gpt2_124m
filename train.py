@@ -13,6 +13,7 @@ from torch.distributed import init_process_group, destroy_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 from model import GPT2_124M, GPT2Config
+from tqdm_bars import tqdmGPT
 
 def initialise_ddp() -> tuple:
     """
@@ -72,29 +73,27 @@ def train() -> tuple:
     train_iter, val_iter = cycle(train_loader), cycle(val_loader)              # create infinite iterators
     
     if MASTER_PROCESS:    # print in command window for only one GPU
+        print("\n*-------------- TRAINING --------------*")
+        print(f"effective batch: {TOKENS_PER_BATCH:,} tokens")
+        
+        tok_per_gpu = BATCH_SIZE * BLOCK_SIZE   # tokens processed per GPU per mini-batch
+        GRAD_ACCUM_STEPS = int(TOKENS_PER_BATCH // (tok_per_gpu * DDP_WORLD_SIZE))  
+        print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}] ({GRAD_ACCUM_STEPS} acc. steps)")
+        total_batches = len(train_loader) * DDP_WORLD_SIZE
+        chunks_per_epoch_train = int(math.ceil(total_batches / (GRAD_ACCUM_STEPS * DDP_WORLD_SIZE)))
+        chunks_per_gpu = int(math.ceil(chunks_per_epoch_train / DDP_WORLD_SIZE))
+        print(f"DataLoader batches: {total_batches:,} ({len(train_loader):,} per GPU)")
+        print(f"=> {chunks_per_epoch_train:,} chunks/epoch ({chunks_per_gpu:,} per GPU)")
 
-        if MASTER_PROCESS:    # print in command window for only one GPU
-            print("\n*-------------- TRAINING --------------*")
-            print(f"effective batch: {TOKENS_PER_BATCH:,} tokens")
-            
-            tok_per_gpu = BATCH_SIZE * BLOCK_SIZE   # tokens processed per GPU per mini-batch
-            GRAD_ACCUM_STEPS = int(TOKENS_PER_BATCH // (tok_per_gpu * DDP_WORLD_SIZE))  
-            print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}] ({GRAD_ACCUM_STEPS} acc. steps)")
-            total_batches = len(train_loader) * DDP_WORLD_SIZE
-            chunks_per_epoch_train = int(math.ceil(total_batches / (GRAD_ACCUM_STEPS * DDP_WORLD_SIZE)))
-            chunks_per_gpu = int(math.ceil(chunks_per_epoch_train / DDP_WORLD_SIZE))
-            print(f"DataLoader batches: {total_batches:,} ({len(train_loader):,} per GPU)")
-            print(f"=> {chunks_per_epoch_train:,} chunks/epoch ({chunks_per_gpu:,} per GPU)")
-
-            print("\n*-------------- VALIDATION --------------*")
-            val_effective_batch = BATCH_SIZE * BLOCK_SIZE * VAL_ACCUM_STEPS * DDP_WORLD_SIZE
-            print(f"effective batch: {val_effective_batch:,} tokens")
-            print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}] ({VAL_ACCUM_STEPS} acc. steps)")
-            total_val_batches = len(val_loader) * DDP_WORLD_SIZE
-            chunks_per_epoch_val = int(math.ceil(total_val_batches / (VAL_ACCUM_STEPS * DDP_WORLD_SIZE)))
-            val_chunks_per_gpu = int(math.ceil(chunks_per_epoch_val / DDP_WORLD_SIZE))
-            print(f"DataLoader batches: {total_val_batches:,} ({len(val_loader):,} per GPU)")
-            print(f"=> {chunks_per_epoch_val:,} chunks/epoch ({val_chunks_per_gpu:,} per GPU)")
+        print("\n*-------------- VALIDATION --------------*")
+        val_effective_batch = BATCH_SIZE * BLOCK_SIZE * VAL_ACCUM_STEPS * DDP_WORLD_SIZE
+        print(f"effective batch: {val_effective_batch:,} tokens")
+        print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}] ({VAL_ACCUM_STEPS} acc. steps)")
+        total_val_batches = len(val_loader) * DDP_WORLD_SIZE
+        chunks_per_epoch_val = int(math.ceil(total_val_batches / (VAL_ACCUM_STEPS * DDP_WORLD_SIZE)))
+        val_chunks_per_gpu = int(math.ceil(chunks_per_epoch_val / DDP_WORLD_SIZE))
+        print(f"DataLoader batches: {total_val_batches:,} ({len(val_loader):,} per GPU)")
+        print(f"=> {chunks_per_epoch_val:,} chunks/epoch ({val_chunks_per_gpu:,} per GPU)")
 
     # ---------- MODEL INSTANCE ---------- #
         print(f"\nloading model, optimiser and scheduler...\n")
@@ -127,10 +126,16 @@ def train() -> tuple:
 
     import sys; sys.exit()      # currently exiting early for TESTING purposes
     
-    for i in range(ITERATIONS):     # not using set_epoch() since iterations are used over epochs
+    pbar = tqdmGPT(     # create a custom tqdm bar for printing/logging stats (see tqdm_bars.py)
+        iterable=range(ITERATIONS),
+        n_tokens=(BATCH_SIZE * BLOCK_SIZE),         # custom input: tokens processed in input batch
+        acc_steps=GRAD_ACCUM_STEPS,                 # custom input: gradient accumulation steps
+        desc="train_loss: ? | val_losses: ? |",
+        total=ITERATIONS,
+        disable=(DDP_LOCAL_RANK != 0),    # show progress bar for only the first GPU process (DDP)
+    )
 
-        if MASTER_PROCESS:          # capture starting time for stats (master process only)
-            t0 = time.time() if MASTER_PROCESS else None    
+    for i in pbar:     # pbar acts as a normal iterator when disabled (for non-master GPU processes)
 
         model.train()
         X, y = next(train_iter)
@@ -152,29 +157,22 @@ def train() -> tuple:
                         loss.backward()
             else:
                 loss.backward()                 # no syncrhonisation for a single GPU
-        if DDP_WORLD_SIZE > 1:                                      # calculate and synchronise the average loss across all GPUs
-            dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)       # all_reduce places the same final averaged result back on all GPUs
-        norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)           # gradient clipping
-        optimiser.step()                                                            # update parameters after GRAD_ACCUM_STEPS
+        if DDP_WORLD_SIZE > 1:                                              # calculate and synchronise the average loss across all GPUs
+            dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)               # all_reduce places the same final averaged result back on all GPUs
+        norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)   # gradient clipping
+        optimiser.step()                                                    # update parameters after GRAD_ACCUM_STEPS
 
         # ----- LEARNING RATE SCHEDULER ----- #
         if i < WARMUP_STEPS:
-            lr = LEARNING_RATE * (i + 1) / WARMUP_STEPS      # linear warmup to LEARNING_RATE
+            lr = LEARNING_RATE * (i + 1) / WARMUP_STEPS     # linear warmup to LEARNING_RATE
             for param_group in optimiser.param_groups:
                 param_group["lr"] = lr
         else:
-            scheduler.step()                                    # update learning rate after WARM_UPSTEPS
-            lr = scheduler.get_last_lr()[0]                     # use param group 0
-
-        # ----- TRACK METRICS ----- #
-        torch.cuda.synchronize()    # wait until CUDA operations queued on a GPU are completed before proceeding
-        if MASTER_PROCESS:
-            t1 = time.time()
-            dt = (t1 - t0) * 1e3        # time difference in miliseconds
-            tps = (X.numel() * GRAD_ACCUM_STEPS * DDP_WORLD_SIZE) / (t1 - t0)    # training tokens/sec processed
+            scheduler.step()                    # update learning rate after WARM_UPSTEPS
+            lr = scheduler.get_last_lr()[0]     # use param group 0
 
         # ----- VALIDATION LOOP ----- #
-        if i % VAL_INTERVAL == 0:
+        if i % VAL_INTERVAL == 0:           # run validation every VAL_INTERVAL iterations
             t0_val = time.time()
             model.eval()
             val_loss = 0
@@ -184,11 +182,7 @@ def train() -> tuple:
                     X_val, y_val = X.to(DEVICE), y.to(DEVICE)
                     _, loss = model(X_val, y_val)
                     val_loss += loss.item() / VAL_ACCUM_STEPS    # equivalent to val_loss /= VAL_ACCUM_STEPS in the final iteration
-            torch.cuda.synchronize()
             if MASTER_PROCESS:
-                t1_val = time.time()
-                dt_val = (t1_val - t0_val) * 1e3
-                tps_val = (X.numel() * VAL_ACCUM_STEPS) / (t1_val - t0_val)     # validation tokens/sec processed
                 val_losses[i] = val_loss
         
         # ----- LOG PROGRESS & STATS ----- #
@@ -196,20 +190,17 @@ def train() -> tuple:
             learning_rates[i] = lr                      # populate arrays for plotting
             train_losses[i] = train_loss.item()
             if i % LOG_INTERVAL == 0:
-                pct = (i + 1) / ITERATIONS * 100        # percentage completion
-                progress_str = (
-                    f"\r{i + 1:,}/{ITERATIONS:,} ({pct:.0f}%) | "
+                pbar.set_description_str(
                     f"train_loss: {train_loss.item():.3f} | "
-                    f"{dt * 1e-3:,.2f} sec/batch ({dt / GRAD_ACCUM_STEPS:.1f} ms/iter) | "
-                    f"{tps:,.0f} tok/sec | "
-                    f"val_loss: {val_loss:.3f} | "
-                    f"{dt_val * 1e-3:.1f} sec ({tps_val:,.0f} tok/sec)"
+                    f"val_loss: {val_loss:.3f}"
                 )
-                print(progress_str, end="")
+
+    # ---------- TRAINING COMPLETE ---------- #
     if MASTER_PROCESS:
         print("\n\nTraining Complete.")     # print completion message
-    if DDP_WORLD_SIZE > 1:
+    if DDP_WORLD_SIZE > 1:                  # if using DDP
         destroy_process_group()             # clean up DDP process group
+
     return model, train_losses, val_losses, learning_rates
 
 
