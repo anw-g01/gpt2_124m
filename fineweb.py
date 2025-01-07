@@ -51,10 +51,6 @@ def calc_shard_num(dataset: datasets.Dataset) -> tuple:
     return total_shards
 
 
-
-
-# ------ MAIN PROCESS LOOP FUNCTION ------ #
-
 def main() -> None:
     """
     Process `FineWeb-Edu Sample-10BT` by tokenzing documents and saving them in fixed-size shards.
