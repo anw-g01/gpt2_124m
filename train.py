@@ -123,8 +123,6 @@ def train() -> tuple:
         train_losses = np.empty(ITERATIONS)
         val_losses = np.full(ITERATIONS, np.nan)    # initialise with NaNs (due to interval usage)
         learning_rates = np.empty(ITERATIONS)
-
-    import sys; sys.exit()      # currently exiting early for TESTING purposes
     
     pbar = tqdmGPT(     # create a custom tqdm bar for printing/logging stats (see tqdm_bars.py)
         iterable=range(ITERATIONS),
@@ -149,6 +147,7 @@ def train() -> tuple:
                 _, loss = model(X_train, y_train)
             loss /= GRAD_ACCUM_STEPS                                                # scale loss to mimic full total batch average
             train_loss += loss.detach()                                             # prevent carry over of computational graph
+            
             if DDP_WORLD_SIZE > 1:                                                  # could also use "contextlib.nullcontext()"
                 if micro_step == GRAD_ACCUM_STEPS - 1:
                     loss.backward()             # synchronise gradients across all GPUs in the final accumulation step
@@ -157,6 +156,7 @@ def train() -> tuple:
                         loss.backward()
             else:
                 loss.backward()                 # no syncrhonisation for a single GPU
+        
         if DDP_WORLD_SIZE > 1:                                              # calculate and synchronise the average loss across all GPUs
             dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)               # all_reduce places the same final averaged result back on all GPUs
         norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)   # gradient clipping
