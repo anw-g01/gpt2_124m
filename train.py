@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from transformers import get_cosine_schedule_with_warmup
 import matplotlib.pyplot as plt
 import numpy as np
 import math
@@ -105,6 +106,11 @@ def train() -> tuple:
         T_max=(MAX_STEPS - WARMUP_STEPS),   # decay starts after warmup
         eta_min=0.1*LEARNING_RATE           # minimum learning rate
     )
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer=optimiser,                # English spelling :)
+        num_warmup_steps=WARMUP_STEPS,      # no. of warmup steps
+        num_training_steps=ITERATIONS       # total number of training steps
+    )
     
     model = torch.compile(model)    
     if DDP_WORLD_SIZE > 1:                                          # if using DDP
@@ -159,16 +165,12 @@ def train() -> tuple:
         if DDP_WORLD_SIZE > 1:                                              # calculate and synchronise the average loss across all GPUs
             dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)               # all_reduce places the same final averaged result back on all GPUs
         norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)   # gradient clipping
-        optimiser.step()                                                    # update parameters after GRAD_ACCUM_STEPS
-
-        # ----- LEARNING RATE SCHEDULER ----- #
-        if i < WARMUP_STEPS:
-            lr = LEARNING_RATE * (i + 1) / WARMUP_STEPS     # linear warmup to LEARNING_RATE
-            for param_group in optimiser.param_groups:
-                param_group["lr"] = lr
-        else:
-            scheduler.step()                    # update learning rate after WARM_UPSTEPS
-            lr = scheduler.get_last_lr()[0]     # use param group 0
+        optimiser.step()                                                    # update model parameters
+        scheduler.step()                                                    # update learning rate
+        lr = scheduler.get_last_lr()[0]                                     # get the last learning rate value (for storing/logging)
+        # lr = max(lr, 0.1 * LEARNING_RATE)                                   # cap minimum value to 10% (scheduler goes to 0 otherwise)
+        # for param_group in optimiser.param_groups:      
+        #     param_group["lr"] = lr                                          # update for each parameter group
 
         # ----- VALIDATION LOOP ----- #
         # run validation every VAL_INTERVAL iterations OR on the final iteration
@@ -194,7 +196,6 @@ def train() -> tuple:
                     f"train_loss: {train_loss.item():.3f} | "
                     f"val_loss: {val_loss:.3f}"
                 )
-
     # ---------- TRAINING COMPLETE ---------- #
     if MASTER_PROCESS:
         print("\n\nTraining Complete.")     # print completion message
