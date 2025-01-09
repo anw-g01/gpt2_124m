@@ -135,14 +135,13 @@ def train() -> tuple:
 
     for i in pbar:     # pbar acts as a normal iterator when disabled (for non-master GPU processes)
 
+        # ----- TRAINING - GRADIENT ACCUMULATION ----- #
         model.train()
-        X, y = next(train_iter)
-        X_train, y_train = X.to(DEVICE), y.to(DEVICE)
-
-        # ----- GRADIENT ACCUMULATION ----- #
         optimiser.zero_grad()                                                       # reset gradients
         train_loss = 0                                                              # accumulated train loss
         for micro_step in range(GRAD_ACCUM_STEPS):
+            X, y = next(train_iter)                                                 # get next training mini-batch
+            X_train, y_train = X.to(DEVICE), y.to(DEVICE)                           # move to GPU
             with torch.autocast(device_type=DEVICE.type, dtype=torch.bfloat16):     # mixed precision
                 _, loss = model(X_train, y_train)
             loss /= GRAD_ACCUM_STEPS                                                # scale loss to mimic full total batch average
