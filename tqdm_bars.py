@@ -54,6 +54,37 @@ class tqdmGPT(tqdm):
         else:
             d["tok/s"] = "? tok/s"
         return d
+
+
+class tqdmHS(tqdm):
+    """
+    Custom and optional tqdm progress bar for evaluating on HellaSwag.
+    Only displayed if `verbose=True` in `evaluate()`, from `hellaswag.py`.
+    """
+
+    def __init__(self, *args, **kwargs):
+        bar_format_str = (
+            "[{bar:15}] {n_fmt}/{total_fmt} ({percentage:.1f}%) | "
+            "{desc} "
+            "[{elapsed}<{remaining}, {rate_fmt} examples/s]"
+        )
+        params = {
+            "bar_format": bar_format_str,
+            "ascii": "-=",
+            "mininterval": 1,
+            "colour": "cyan"
+        }
+        for key, value in params.items():
+            kwargs.setdefault(key, value)
+        super().__init__(*args, **kwargs)    
+
+    @property
+    def format_dict(self):
+        d = super().format_dict    
+        d["n_fmt"] = f"{d['n']:,}" if d["n"] else "?"               # current example
+        d["total_fmt"] = f"{d['total']:,}" if d["total"] else "?"   # total examples
+        d["rate_fmt"] = f"{d['rate']:,.1f}" if d['rate'] else "?"   # examples processed per second
+        return d
     
 
 class tqdmFW(tqdm):
