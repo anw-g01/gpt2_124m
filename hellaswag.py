@@ -61,18 +61,12 @@ def render(example: dict) -> tuple:
     Render a given `example` dictionary into a suitable format for evaluation.
     
     Returns:
-    - `data`: `dict()` with keys `label`, `context_tokens`, and `ending_tokens`
     - `tokens`: `torch.tensor` of shape `(4, N)` with concatenated context and ending tokens for each of the four candidates 
     -  `mask`: `torch.tensor` of shape `(4, N)` populated with `1`'s for ending tokens and `0`'s for context tokens
     - `label`: `int` (`0`, `1`, `2`, or `3`) representing the index of the correct ending candidate
     """
-
+    label = example["label"],                       # correct ending label (0, 1, 2, or 3)
     context_tokens = ENC.encode(example["ctx"])     # tokenize context (event description)
-    data = {                                
-        "label": example["label"],                  # correct ending label
-        "context_tokens": context_tokens,   
-        "ending_tokens": []                         # list to tokenize endings for each of the 4 candidates
-    }
     
     # populate [tokens + endings] and a [mask] for each candidate:
     token_rows, mask_rows = [], []                                      # arrays to populate each token and mask rows
@@ -82,7 +76,6 @@ def render(example: dict) -> tuple:
         token_rows.append(context_tokens + ending_tokens)               # populate as a given row
         m_row = [0] * len(context_tokens) + [1] * len(ending_tokens)    # create mask for ending tokens
         mask_rows.append(m_row)                                         # populate as a given row
-        data["ending_tokens"].append(ending_tokens)                     # append ending tokens to data dictionary
 
     # create PyTorch tensors for tokens and mask:
     max_len = max(len(row) for row in token_rows)                       # find length of the longest row (from four options)
@@ -92,7 +85,7 @@ def render(example: dict) -> tuple:
         tokens[i, :len(t_row)] = torch.tensor(t_row)                    # populate token tensor
         mask[i, :len(m_row)] = torch.tensor(m_row)                      # populate mask tensor
 
-    return data, tokens, mask, data["label"]
+    return tokens, mask, label                                       # return tokens, mask, and ground truth label
 
 
 @torch.no_grad()
@@ -124,7 +117,7 @@ def evaluate(
     )
 
     for i, example in enumerate(pbar):
-        data, tokens, mask, label = render(example)
+        tokens, mask, label = render(example)
         T, M = tokens.to(device), mask.to(device)
 
         P = model(T).logits                     # get all logits from forward pass
