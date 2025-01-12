@@ -37,6 +37,13 @@ def _get_file(url: str, filename: str, chunk_size=1024):
                 pbar.update(size)                               # update bar by bytes progress
 
 
+def _num_examples(filename: str, split: str):
+    """Find the number of examples in the HellaSwag dataset for a given `split`."""
+    with open(filename, "r") as file:
+        length = len(file.readlines())
+        DATASETS[split].append(length)      # add to the GLOBAL dictionary
+
+
 def _download(split: str):
     """Download the HellaSwag dataset for a given `split` and save it  to `DATA_CACHE_DIR`."""
     os.makedirs(DATA_CACHE_DIR, exist_ok=True)                              # create cache directory if it doesn't exist already
@@ -45,7 +52,7 @@ def _download(split: str):
     if not os.path.exists(filename):                                        # if file doesn't exist
         print(f"downloading {url} to {filename}...")
         _get_file(url, filename)                                             # download the file into the directory path
-
+        _num_examples(filename, split)                                       # find the number of examples in the file
 
 def iterate_examples(split: str):
     """Iterate over examples in the HellaSwag dataset for a given `split`."""
@@ -111,7 +118,7 @@ def evaluate(
     total, correct = 0, 0
     pbar = tqdmHS(
         iterable=iterate_examples(split),
-        total=DATASETS[split][1],
+        total=DATASETS[split][1],               # length of examples (from GLOBAL dictionary)
         desc=f"correct: 0/0",
         disable=not verbose
     )
