@@ -89,9 +89,9 @@ class FineWebEdu(Dataset):
             else:
                 X, y = X1, y1                       # X, y are unchanged (already filled)
 
-        else:                                                   # normal case (no shard boundary crossing)
-            X = tokens[idx: idx + chunk_size]                   # get the input sequence
-            y = tokens[idx + 1: idx + chunk_size + 1]           # get the target sequence (next token for each sample)
+        else:       # normal case (no shard boundary crossing)
+            X = tokens[local_idx: local_idx + chunk_size]                   # get the input sequence
+            y = tokens[local_idx + 1: local_idx + chunk_size + 1]           # get the target sequence (next token for each sample)
         return X.view(self.batch_size, -1), y.view(self.batch_size, -1)     # return with shapes [batch_size, block_size]
 
     def __len__(self):
