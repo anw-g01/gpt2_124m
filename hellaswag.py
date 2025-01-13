@@ -24,17 +24,8 @@ def _get_file(url: str, filename: str, chunk_size=1024):
     with requests.get(url, stream=True) as response:
         total = int(response.headers.get("content-length", 0))
         with open(filename, "wb") as file:                      # "write binary"
-            pbar = tqdm(
-                iterable=response.iter_content(chunk_size),     # iterate over response chunks
-                total=total,                                    # total no. of bytes to download
-                unit="iB",                                      # unit of progress ("iB" for binary bytes)
-                unit_scale=True,                                # scale unit automatically
-                unit_divisor=1024,                              # divisor for scaling the unit (1024 for binary scale)
-                desc=f"downloading {filename}"
-            )
-            for chunk in pbar:
-                size = file.write(chunk)                        # write file; returns no. of bytes written to file
-                pbar.update(size)                               # update bar by bytes progress
+            for chunk in response.iter_content(chunk_size):     # iterate over chunks of data
+                file.write(chunk)                               # write file (optional: can return the no. of bytes written to file)
 
 
 def _download(split: str):
@@ -43,7 +34,7 @@ def _download(split: str):
     url = DATASETS[split][0]                                                # get URL for the specified split
     filename = os.path.join(DATA_CACHE_DIR, f"hellaswag_{split}.jsonl")     # create filename for the split
     if not os.path.exists(filename):                                        # if file doesn't exist
-        print(f"downloading {url} to {filename}...")
+        print(f"\ndownloading to {filename}...\n")
         _get_file(url, filename)                                             # download the file into the directory path
 
 
@@ -65,7 +56,7 @@ def render(example: dict) -> tuple:
     -  `mask`: `torch.tensor` of shape `(4, N)` populated with `1`'s for ending tokens and `0`'s for context tokens
     - `label`: `int` (`0`, `1`, `2`, or `3`) representing the index of the correct ending candidate
     """
-    label = example["label"],                       # correct ending label (0, 1, 2, or 3)
+    label = example["label"]                        # correct ending label (0, 1, 2, or 3)
     context_tokens = ENC.encode(example["ctx"])     # tokenize context (event description)
     
     # populate [tokens + endings] and a [mask] for each candidate:
@@ -85,7 +76,7 @@ def render(example: dict) -> tuple:
         tokens[i, :len(t_row)] = torch.tensor(t_row)                    # populate token tensor
         mask[i, :len(m_row)] = torch.tensor(m_row)                      # populate mask tensor
 
-    return tokens, mask, label                                       # return tokens, mask, and ground truth label
+    return tokens, mask, label
 
 
 @torch.no_grad()
@@ -111,7 +102,7 @@ def evaluate(
     total, correct = 0, 0
     pbar = tqdmHS(
         iterable=iterate_examples(split),
-        total=DATASETS[split][1],               # length of examples (39,905)
+        total=DATASETS[split][1],               # length of examples (39,905 for "train")
         desc=f"correct: 0/0",
         disable=not verbose
     )
@@ -142,10 +133,10 @@ def evaluate(
         total += 1
         correct += int(y_pred == label)
 
-        if verbose and (i % 1 == 0):            # progress logging if verbose=True
+        if verbose and (i % 5 == 0 or i == DATASETS[split][1] - 1):            # progress logging if verbose=True
             correct_pct = correct / (i + 1) * 100
             progress_str = (
-                f"correct: {correct:,}/{i:,} ({correct_pct:.1f}%)"
+                f"correct: {correct:,}/{i + 1:,} ({correct_pct:.1f}%)"
             )
             pbar.set_description_str(progress_str)
         
@@ -154,11 +145,11 @@ def evaluate(
 
 def main() -> None:
     """
-    Evaluate on pretrained `GPT-2` (124M) on the HellaSwag training dataset:
+    Evaluate on pretrained `GPT-2` (124M) on the HellaSwag `"val"` dataset:
     
-    `[===============] 39,905/39,905 (100.0%) | correct: 12,356/39,900 (31.0%) [06:10<00:00, ? examples/s]`
+    `[===============] 10,042/10,042 (100.0%) | correct: 2,968/10,042 (29.6%) [01:34<00:00, ? examples/s]`
 
-    Final results score: `correct: 12,358/39,905 (31.0%)`
+    Final results score: `correct: 2,968/10,042 (29.6%)`
 
     Use `model_type="gpt2-xl"` for the `1.5B` parameter `GPT-2` model; default is `"gpt2"`.
     """
@@ -172,5 +163,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    
-    main()      # evaluate with a pretrained model (with progress bar logging)
+    main()      
