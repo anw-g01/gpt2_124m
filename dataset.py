@@ -6,6 +6,102 @@ import os
 from config import DATA_ROOT
 from fineweb import SHARD_SIZE    
 
+LAST_SHARD_SIZE = 82_590_278
+
+class FineWebEdu(Dataset):
+    """
+    PyTorch Dataset for FineWeb-Edu (`sample-10BT`) dataset shards.
+    ---
+    Handles the loading of tokenized dataset shards stored as NumPy arrays in `DATA_ROOT`.
+    Supports batching of data within a shard file as well as across shard boundaries.
+    Returns input (`X`) and target (`y`) with shape `[batch_size, block_size]`.
+
+    `__len__()` method:
+    ---
+    Returns the number of available batches in one epoch for a given `split`.
+    Only the first shard with `100M` tokens (`SHARD_SIZE`) is used for the validation set.
+    The training set uses the remaining `99` shards. 
+    NOTE: The first `98` shards of the training set hold `100M` tokens each,
+    while the last shard holds exactly `82,590,278` tokens.
+    """
+
+    def __init__(self, batch_size: int, block_size: int, split="train", dir=DATA_ROOT, verbose=True):
+        self.verbose = verbose
+        assert split.lower() in ["train", "val"], "split must be either 'train' or 'val'"
+        self.split = split              # split to specify __len__() method
+        self.batch_size = batch_size    # no. of samples to user in a forward pass
+        self.block_size = block_size    # context (sequence) length
+        self.root       = dir           # specify directory where the data shards are stored in config.py
+        self.shards = self._get_shard_paths(split)    # load shards from directory based on split
+        self.cache      = {}            # cache for validation set only
+
+    def _get_shard_paths(self, split):
+        """Get shard file names from the root directory (based on the split) to construct their full paths."""
+        names = [f for f in os.listdir(self.root) if split in f]       # get individual shard file names
+        shards = [os.path.join(self.root, f) for f in names]               # construct full paths, sorted by name (ascending order)
+        assert len(shards) > 0, f"no shards found for split='{split}' in {self.root}"
+        if self.verbose:
+            n = len(shards) * SHARD_SIZE * 1e-9
+            print(f'found {len(shards):,} shard(s) for "{split}" split -> ({n:.2f} B tokens)')
+        return shards   # return list of full paths to shards
+
+    def _load_shard(self, shard_idx: int):
+        """Loads a single shard as a PyTorch tensor of tokens, based on the `shard_idx`."""
+        path = self.shards[shard_idx]       # get the full shard path
+        if path in self.cache:              # check if shard is already loaded
+            return self.cache[path]         # return the cached shard
+        self.cache = {}                     # clear the cache (high memory consumption)
+        arr = np.load(path)                             # load the shard as a numpy array
+        tokens = torch.tensor(arr, dtype=torch.long)    # convert to PyTorch tensor with int64 dtype
+        self.cache[path] = tokens                       # cache the loaded shard
+        return tokens
+    
+    def __getitem__(self, idx: int):
+        """Returns a single batch of input and target sequences based on `idx` - a batch index."""
+        chunk_size = self.batch_size * self.block_size              # chunk size (tokens in one batch)
+        global_idx = idx * chunk_size                               # starting position (across all shards)
+        
+        # determine corresponding shard index from global index:
+        shard_idx = global_idx // SHARD_SIZE                                # get index of current shard file by the default shard size of 100M
+        if shard_idx == len(self.shards) - 1:                               # if inside the last shard
+            # subtract the total tokens in all previous shards (98 shards × 100M) to get the position in the last shard:
+            local_idx = global_idx - ((len(self.shards) - 1) * SHARD_SIZE)  # index within the LAST shard
+        else:
+            local_idx = global_idx % SHARD_SIZE                             # index within all other shards 
+        
+        tokens = self._load_shard(shard_idx)                    # load the corresponding shard tokens
+        if local_idx + chunk_size >= tokens.shape[0]:           # if the current shard will be exhausted
+            X1 = tokens[local_idx:]                             # store available tokens of current shard
+            y1 = tokens[local_idx + 1:]                         # corresponding target sequence (next token for each sample)
+            shard_idx = (shard_idx + 1) % len(self.shards)      # move to the next shard (circular indexing)
+            tokens = self._load_shard(shard_idx)                # load the next shard
+            rem = chunk_size - X1.shape[0]                      # remaining tokens needed for X to complete the chunk 
+            
+            if rem == 0:                            # if X was exactly filled but y wasn't
+                X = X1                              # X is unchanged 
+                y2 = tokens[:1]                     # y is missing one token (due to starting index +1)
+                y = torch.cat((y1, y2), dim=0)      # concatenate y tensor
+            elif rem > 0:                           # if X and y both need to be filled
+                X2 = tokens[: rem]                  # get the remaining tokens from next shard to complete chunk
+                y2 = tokens[: rem + 1]              # corresponding target sequence
+                X = torch.cat((X1, X2), dim=0)      # concatenate X
+                y = torch.cat((y1, y2), dim=0)      # concatenate y  
+            else:
+                X, y = X1, y1                       # X, y are unchanged (already filled)
+
+        else:                                                   # normal case (no shard boundary crossing)
+            X = tokens[idx: idx + chunk_size]                   # get the input sequence
+            y = tokens[idx + 1: idx + chunk_size + 1]           # get the target sequence (next token for each sample)
+        return X.view(self.batch_size, -1), y.view(self.batch_size, -1)     # return with shapes [batch_size, block_size]
+
+    def __len__(self):
+        chunk_size = self.batch_size * self.block_size
+        if self.split == "val":
+            return (len(self.shards) * SHARD_SIZE) // chunk_size   
+        # else, for the training set, account for the last shard holding 82,590,278 tokens 
+        return ((len(self.shards) - 1) * SHARD_SIZE + LAST_SHARD_SIZE) // chunk_size 
+
+
 class TinyShakespeare(Dataset):
     """
     PyTorch Dataset for the Tiny Shakespeare dataset, found in `input.txt`.
@@ -60,88 +156,6 @@ class TinyShakespeare(Dataset):
         return X.view(self.batch_size, -1), y.view(self.batch_size, -1)
     
 
-class FineWebEdu(Dataset):
-    """
-    PyTorch Dataset for FineWeb-Edu (`sample-10BT`) dataset shards.
-
-    Handles the loading of tokenized dataset shards stored as NumPy arrays in `DATA_ROOT`.
-    Supports batching of data within a shard file as well as across shard boundaries.
-    Returns input (`X`) and target (`y`) with shape `[batch_size, block_size]`.
-    """
-
-    def __init__(self, batch_size: int, block_size: int, split="train", dir=DATA_ROOT, verbose=True):
-        self.verbose = verbose
-        assert split.lower() in ["train", "val"], "split must be either 'train' or 'val'"
-        self.split = split              # split to specify __len__() method
-        self.batch_size = batch_size    # no. of samples to user in a forward pass
-        self.block_size = block_size    # context (sequence) length
-        self.root       = dir           # specify directory where the data shards are stored in config.py
-        self.shards = self._get_shard_paths(split)    # load shards from directory based on split
-        self.cache      = {}            # cache for validation set only
-
-    def _get_shard_paths(self, split):
-        """Get shard file names from the root directory (based on the split) to construct their full paths."""
-        names = [f for f in os.listdir(self.root) if split in f]       # get individual shard file names
-        shards = [os.path.join(self.root, f) for f in names]               # construct full paths, sorted by name (ascending order)
-        assert len(shards) > 0, f"no shards found for split='{split}' in {self.root}"
-        if self.verbose:
-            n = len(shards) * SHARD_SIZE * 1e-9
-            print(f'found {len(shards):,} shard(s) for "{split}" split -> ({n:.2f} B tokens)')
-        return shards   # return list of full paths to shards
-
-    def _load_shard(self, shard_idx: int):
-        """Loads a single shard as a PyTorch tensor of tokens, based on the `shard_idx`."""
-        path = self.shards[shard_idx]       # get the full shard path
-        if path in self.cache:              # check if shard is already loaded
-            return self.cache[path]         # return the cached shard
-        self.cache = {}                     # clear the cache (high memory consumption)
-        arr = np.load(path)                             # load the shard as a numpy array
-        tokens = torch.tensor(arr, dtype=torch.long)    # convert to PyTorch tensor with int64 dtype
-        self.cache[path] = tokens                       # cache the loaded shard
-        return tokens
-    
-    def __getitem__(self, idx: int):
-        """Returns a single batch of input and target sequences based on the current index."""
-        chunk_size = self.batch_size * self.block_size              # chunk size (tokens in one batch)
-        global_idx = idx * chunk_size                               # starting position (across all shards)
-        # determine corresponding shard index from global index:
-        shard_idx = global_idx // SHARD_SIZE                        # get index of current shard file by the default shard size of 100M
-        tokens = self._load_shard(shard_idx)                        # load the corresponding shard tokens
-        local_idx = global_idx % SHARD_SIZE                         # index within others shard (espeically for last index which has <100M tokens)
-        if local_idx + chunk_size >= tokens.shape[0]:           # if the current shard will be exhausted
-            X1 = tokens[local_idx:]                             # store available tokens of current shard
-            y1 = tokens[local_idx + 1:]                         # corresponding target sequence (next token for each sample)
-            shard_idx = (shard_idx + 1) % len(self.shards)      # move to the next shard (circular indexing)
-            tokens = self._load_shard(shard_idx)                # load the next shard
-            rem = chunk_size - X1.shape[0]                      # remaining tokens needed for X to complete the chunk 
-            
-            if rem == 0:                            # if X was exactly filled but y wasn't
-                X = X1                              # X is unchanged 
-                y2 = tokens[:1]                     # y is missing one token (due to starting index +1)
-                y = torch.cat((y1, y2), dim=0)      # concatenate y tensor
-            elif rem > 0:                           # if X and y both need to be filled
-                X2 = tokens[: rem]                  # get the remaining tokens from next shard to complete chunk
-                y2 = tokens[: rem + 1]              # corresponding target sequence
-                X = torch.cat((X1, X2), dim=0)      # concatenate X
-                y = torch.cat((y1, y2), dim=0)      # concatenate y  
-            else:
-                X, y = X1, y1                       # X, y are unchanged (already filled)
-
-        else:                                                   # normal case (no shard boundary crossing)
-            X = tokens[idx: idx + chunk_size]                   # get the input sequence
-            y = tokens[idx + 1: idx + chunk_size + 1]           # get the target sequence (next token for each sample)
-        return X.view(self.batch_size, -1), y.view(self.batch_size, -1)     # return with shapes [batch_size, block_size]
-
-    def __len__(self):
-        """
-        Returns the number of available batches in one epoch.
-        N.B. only 100M tokens (SHARD_SIZE) used for the validation set.
-        Remaining tokens used for the training set.
-        """
-        chunk_size = self.batch_size * self.block_size
-        return (len(self.shards) * SHARD_SIZE) // chunk_size
-
-
 if __name__ == "__main__":
 
     batch_size = 16             # samples per forward pass
@@ -150,16 +164,16 @@ if __name__ == "__main__":
     # ----- DataLoader EXAMPLES with FineWebEdu Sample-10BT ----- #
 
     train_dataset = FineWebEdu(batch_size, block_size, split="train")
-    train_sampler = DistributedSampler(
-        train_dataset,
-        num_replicas=8,
-        rank=0,
-        shuffle=False
-    )
+    # train_sampler = DistributedSampler(
+    #     train_dataset,
+    #     num_replicas=8,
+    #     rank=0,
+    #     shuffle=False
+    # )
     train_loader = DataLoader(
         train_dataset,
         batch_size=None,            # must be set to None
-        sampler=train_sampler,      # using a DistributedSampler
+        # sampler=train_sampler,      # using a DistributedSampler
         pin_memory=True,
         shuffle=False
     )
@@ -180,7 +194,7 @@ if __name__ == "__main__":
             except StopIteration:           # iterator reaches the end
                 iterator = iter(iterable)   # reset the iterator 
 
-    train_iter = iter(train_loader)
+    train_iter = cycle(iter(train_loader))
 
     # example traversal through on epoch of the DataLoader
     n = len(train_loader)
