@@ -12,9 +12,9 @@ import os
 
 DATA_CACHE_DIR = os.path.join(os.path.dirname(__file__), 'hellaswag_dataset')
 DATASETS = {
-    "train": "https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_train.jsonl",
-    "val": "https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_val.jsonl",
-    "test": "https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_test.jsonl",
+    "train": ["https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_train.jsonl", 39_905],
+    "val": ["https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_val.jsonl", 10_042],
+    "test": ["https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_test.jsonl", 10_003],
 }
 ENC = tiktoken.get_encoding("gpt2")     # GPT2 tokenizer for encoding
 
@@ -37,22 +37,15 @@ def _get_file(url: str, filename: str, chunk_size=1024):
                 pbar.update(size)                               # update bar by bytes progress
 
 
-def _num_examples(filename: str, split: str):
-    """Find the number of examples in the HellaSwag dataset for a given `split`."""
-    with open(filename, "r") as file:
-        length = len(file.readlines())
-        DATASETS[split].append(length)      # add to the GLOBAL dictionary
-
-
 def _download(split: str):
     """Download the HellaSwag dataset for a given `split` and save it  to `DATA_CACHE_DIR`."""
     os.makedirs(DATA_CACHE_DIR, exist_ok=True)                              # create cache directory if it doesn't exist already
-    url = DATASETS[split]                                                   # get URL for the specified split
+    url = DATASETS[split][0]                                                # get URL for the specified split
     filename = os.path.join(DATA_CACHE_DIR, f"hellaswag_{split}.jsonl")     # create filename for the split
     if not os.path.exists(filename):                                        # if file doesn't exist
         print(f"downloading {url} to {filename}...")
         _get_file(url, filename)                                             # download the file into the directory path
-        _num_examples(filename, split)                                       # find the number of examples in the file
+
 
 def iterate_examples(split: str):
     """Iterate over examples in the HellaSwag dataset for a given `split`."""
@@ -118,7 +111,7 @@ def evaluate(
     total, correct = 0, 0
     pbar = tqdmHS(
         iterable=iterate_examples(split),
-        total=DATASETS[split][1],               # length of examples (from GLOBAL dictionary)
+        total=DATASETS[split][1],               # length of examples (39,905)
         desc=f"correct: 0/0",
         disable=not verbose
     )
@@ -149,7 +142,7 @@ def evaluate(
         total += 1
         correct += int(y_pred == label)
 
-        if verbose and (i % 100 == 0):          # progress logging if verbose=True
+        if verbose and (i % 1 == 0):            # progress logging if verbose=True
             correct_pct = correct / (i + 1) * 100
             progress_str = (
                 f"correct: {correct:,}/{i:,} ({correct_pct:.1f}%)"
@@ -170,13 +163,13 @@ def main() -> None:
     Use `model_type="gpt2-xl"` for the `1.5B` parameter `GPT-2` model; default is `"gpt2"`.
     """
 
-    correct, total = evaluate(verbose=True)     # evaluate GPT-2 (124M) on HellaSwag
+    correct, total = evaluate(verbose=True, device="cpu")     # evaluate GPT-2 (124M) on HellaSwag
     
     # display results:
     score = correct / total * 100
     print(f"total correct: {correct:,}/{total:,} ({score:.1f}%)")
 
-    
+
 
 if __name__ == "__main__":
     
