@@ -5,9 +5,10 @@ from transformers import GPT2LMHeadModel
 import tiktoken
 import requests
 import json
-from tqdm import tqdm
 from tqdm_bars import tqdmHS
 import os
+from model import GPT2_124M, GPT2Config
+from typing import Optional, Tuple
 
 
 DATA_CACHE_DIR = os.path.join(os.path.dirname(__file__), 'hellaswag_dataset')
@@ -81,25 +82,35 @@ def render(example: dict) -> tuple:
 
 @torch.no_grad()
 def evaluate(
+        model: Optional[GPT2_124M] = None,   # uses HuggingFace GPT2LMHeadModel() if None
         model_type: str = "gpt2",
-        split: str = "train",
+        split: str = "val",
         compile: bool = False,
         verbose: bool = False,
         device: str = "cuda"
-    ) -> tuple:
+    ) -> Tuple[int, int]:
     """
-    Evaluate a given `model_type` on the HellaSwag dataset for a given `split`.
-    Loads examples iteratively and calculates the average cross entropy loss of
+    Evaluate a specified `GPT2_124M` model on the HellaSwag dataset for a given `split`.
+    If no `model` is specified (`model=None`), the function will use a pretrained `GPT-2` model
+    from HuggingFace. Choose the model size with `model_type`; default is set to `"gpt2"` which
+    is the 124M parameter size of GPT-2.
+
+    The function loads examples iteratively and calculates the average cross entropy loss of
     the model's predictions for each set of ending candidates. The candidate with
     the lowest loss is chosen as the predicted ending. A tally of correct predictions
     against ground truth labels is kept and returned at the end of evaluation.
     """
-
     torch.set_float32_matmul_precision('high') # use tf32
-    model = GPT2LMHeadModel.from_pretrained(model_type).to(device)
-    model = torch.compile(model) if compile else model
 
-    total, correct = 0, 0
+    using_model = False     # flag for getting logits
+    if model is None:       # use HuggingFace model if None
+        model = GPT2LMHeadModel.from_pretrained(model_type).to(device)
+        print(f"using HuggingFace model: {model_type}...\n")
+    else:
+        using_model = True
+    model = torch.compile(model) if compile else model
+    model.eval()    # set model to evaluation mode
+
     pbar = tqdmHS(
         iterable=iterate_examples(split),
         total=DATASETS[split][1],               # length of examples (39,905 for "train")
@@ -107,14 +118,20 @@ def evaluate(
         disable=not verbose
     )
 
+    total, correct = 0, 0
     for i, example in enumerate(pbar):
         tokens, mask, label = render(example)
         T, M = tokens.to(device), mask.to(device)
 
-        P = model(T).logits                     # get all logits from forward pass
-
-        P = P[:, :-1, :].contiguous()           # remove last prediction (nothing to predict after ending)
+        # get all logits from forward pass
+        if using_model:
+            logits, _ = model(T)                # get logits from GPT_124M() (see from model.py)
+        else:
+            logits = model(T).logits             # logits from HuggingFace model
+        
+        P = logits[:, :-1, :].contiguous()      # remove last prediction (nothing to predict after ending)
         T = T[:, 1:].contiguous()               # remove first token (no previous token to predict it)
+        M = M[:, 1:].contiguous()               # shift mask same as tokens tensor (T)
 
         L = F.cross_entropy(
             input=P.view(-1, P.shape[-1]),      # --> [N, vocab_size] (where N = batch_size * seq_len)
@@ -123,7 +140,6 @@ def evaluate(
         )                                       # --> [N,]
         L = L.view(T.shape[0], -1)              # reshape back to [batch_size * seq_len]
 
-        M = M[:, 1:].contiguous()               # shift mask same as tokens tensor (T)
         L *= M                                  # apply mask element-wise (zero all context token positions)
 
         avg_L = L.sum(dim=1) / M.sum(dim=1)     # average along each sample candidate
@@ -143,24 +159,45 @@ def evaluate(
     return correct, total
 
 
-def main() -> None:
+def eval1() -> None:
     """
-    Evaluate on pretrained `GPT-2` (124M) on the HellaSwag `"val"` dataset:
+    Pre-trained HuggingFace Model Example:
+    ---
+    Evaluate using a pretrained `GPT-2` (124M) model when `model=None` on the HellaSwag `"val"` dataset:
+    N.B. use `model_type="gpt2-xl"` for the `1.5B` parameter `GPT-2` model; default is `"gpt2"`.
     
     `[===============] 10,042/10,042 (100.0%) | correct: 2,968/10,042 (29.6%) [01:34<00:00, ? examples/s]`
 
-    Final results score: `correct: 2,968/10,042 (29.6%)`
-
-    Use `model_type="gpt2-xl"` for the `1.5B` parameter `GPT-2` model; default is `"gpt2"`.
+    Example final score output: `correct: 2,968/10,042 (29.6%)`
     """
 
-    correct, total = evaluate(verbose=True, device="cpu")     # evaluate GPT-2 (124M) on HellaSwag
+    correct, total = evaluate(verbose=True)     # evaluate GPT-2 (124M) on HellaSwag
     
     # display results:
     score = correct / total * 100
     print(f"total correct: {correct:,}/{total:,} ({score:.1f}%)")
 
 
+def eval2() -> None:
+    """
+    Specified `GPT2_124M` model evaluation example:
+    ---
+    This example uses an un-trained newly instantiated `GPT2_124M()` model.
+    Its accuracy should be ~25% (1/4) as a a result of randomly initialised
+    weights, i.e. model "guessing". 
+    
+    Example final score output: 2,555/10,042 (25.4%)
+    """
+    
+    correct, total = evaluate(
+        model=GPT2_124M(GPT2Config()),     
+        verbose=True,
+    )
+    
+    # display results:
+    score = correct / total * 100
+    print(f"total correct: {correct:,}/{total:,} ({score:.1f}%)")
+
 
 if __name__ == "__main__":
-    main()      
+    eval2()      
