@@ -100,11 +100,9 @@ def main() -> None:
                 arr[: len(tokens) - remaining] = tokens[remaining:]
                 shard_tokens = len(tokens) - remaining      # reset token count to start with leftovers
 
-        # Ignoring last shard with 82_590_278 tokens for simplicity
-
         # write any further remaining tokens as the last shard
-        # if shard_tokens != 0:
-        #     write_datafile(arr[:shard_tokens], shard_idx)      # last shard holds 82,590,278 tokens (not 100M)
+        if shard_tokens != 0:
+            write_datafile(arr[:shard_tokens], shard_idx)      # last shard holds 82,590,278 tokens (NOT 100M)
 
 if __name__ == "__main__":
     main()
