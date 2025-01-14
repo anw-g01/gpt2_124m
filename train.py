@@ -1,11 +1,9 @@
 import torch
 from torch import nn
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from transformers import get_cosine_schedule_with_warmup
 import matplotlib.pyplot as plt
 import numpy as np
 import math
-import time
 from dataset import TinyShakespeare, FineWebEdu
 from config import *    # import all global variables (all in caps)
 import os
@@ -77,11 +75,12 @@ def train() -> tuple:
         print("\n*-------------- TRAINING --------------*")
         print(f"effective batch: {TOKENS_PER_BATCH:,} tokens")
         
-        tok_per_gpu = BATCH_SIZE * BLOCK_SIZE   # tokens processed per GPU per mini-batch
+        tok_per_gpu = BATCH_SIZE * BLOCK_SIZE    # tokens processed per GPU per mini-batch
         GRAD_ACCUM_STEPS = int(TOKENS_PER_BATCH // (tok_per_gpu * DDP_WORLD_SIZE))  
         print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}] ({GRAD_ACCUM_STEPS} acc. steps)")
-        total_batches = len(train_loader) * DDP_WORLD_SIZE
-        chunks_per_epoch_train = int(math.ceil(total_batches / (GRAD_ACCUM_STEPS * DDP_WORLD_SIZE)))
+        total_batches = len(train_loader) * DDP_WORLD_SIZE    # total mini-batches in ONE EPOCH for all GPUs
+        # calculate no. of complete batches (called chunks) per epoch for all GPUs:
+        chunks_per_epoch_train = int(math.ceil(total_batches / (GRAD_ACCUM_STEPS * DDP_WORLD_SIZE)))    
         chunks_per_gpu = int(math.ceil(chunks_per_epoch_train / DDP_WORLD_SIZE))
         print(f"DataLoader batches: {total_batches:,} ({len(train_loader):,} per GPU)")
         print(f"=> {chunks_per_epoch_train:,} chunks/epoch ({chunks_per_gpu:,} per GPU)")
@@ -99,17 +98,14 @@ def train() -> tuple:
     # ---------- MODEL INSTANCE ---------- #
         print(f"\nloading model, optimiser and scheduler...\n")
 
-    model = GPT2_124M(GPT2Config(vocab_size=50304)).to(DEVICE)     # increase vocab size to (2^7 * 3 * 131)
-    optimiser = model.configure_optim(WEIGHT_DECAY, LEARNING_RATE, DEVICE.type)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    total_iterations = len(train_loader) * EPOCHS * DDP_WORLD_SIZE  # total iterations (mini-batches) across ALL GPUs
+
+    model = GPT2_124M(GPT2Config(vocab_size=50304)).to(DEVICE)      # increase vocab size to (2^7 * 3 * 131)
+    optimiser = model.configure_optim(WEIGHT_DECAY, MAX_LEARNING_RATE, DEVICE.type)
+    scheduler = CosineAnnealingLR(
         optimizer=optimiser,
-        T_max=(MAX_STEPS - WARMUP_STEPS),   # decay starts after warmup
-        eta_min=0.1*LEARNING_RATE           # minimum learning rate
-    )
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer=optimiser,                # English spelling :)
-        num_warmup_steps=WARMUP_STEPS,      # no. of warmup steps
-        num_training_steps=ITERATIONS       # total number of training steps
+        T_max=(total_iterations - WARMUP_STEPS),    # iterations over which decay starts (after linear warmup phase)
+        eta_min=0.1*MAX_LEARNING_RATE               # set minimum learning rate to 10% of the maximum
     )
     
     model = torch.compile(model)    
@@ -160,22 +156,26 @@ def train() -> tuple:
                     with model.no_sync():       # context manager: accumulate gradients without synchronisation 
                         loss.backward()
             else:
-                loss.backward()                 # no syncrhonisation for a single GPU
-        
-        if DDP_WORLD_SIZE > 1:                                              # calculate and synchronise the average loss across all GPUs
+                loss.backward()                 # no synchronisation for a single GPU
+        # calculate and synchronise the average loss across all GPUs:
+        if DDP_WORLD_SIZE > 1:                                              
             dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)               # all_reduce places the same final averaged result back on all GPUs
-        norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)   # gradient clipping
-        optimiser.step()                                                    # update model parameters
-        scheduler.step()                                                    # update learning rate
-        lr = scheduler.get_last_lr()[0]                                     # get the last learning rate value (for storing/logging)
-        # lr = max(lr, 0.1 * LEARNING_RATE)                                   # cap minimum value to 10% (scheduler goes to 0 otherwise)
-        # for param_group in optimiser.param_groups:      
-        #     param_group["lr"] = lr                                          # update for each parameter group
+        # clip gradients to prevent exploding gradients and update model parameters:
+        nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)          
+        optimiser.step()                                                    
+        
+        # ----- LEARNING RATE SCHEDULER ----- #
+        if i < WARMUP_STEPS:
+            lr = MAX_LEARNING_RATE * (i + 1) / WARMUP_STEPS     # linear warmup to LEARNING_RATE
+            for param_group in optimiser.param_groups:
+                param_group["lr"] = lr
+        else:   # cosine decay begins with scheduler (after WARM_UPSTEPS)
+            scheduler.step()                    
+            lr = scheduler.get_last_lr()[0] 
 
         # ----- VALIDATION LOOP ----- #
         # run validation every VAL_INTERVAL iterations OR on the final iteration
         if (i % VAL_INTERVAL == 0) or (i == ITERATIONS - 1): 
-            t0_val = time.time()
             model.eval()
             val_loss = 0
             with torch.no_grad():
@@ -196,6 +196,7 @@ def train() -> tuple:
                     f"train_loss: {train_loss.item():.3f} | "
                     f"val_loss: {val_loss:.3f}"
                 )
+
     # ---------- TRAINING COMPLETE ---------- #
     if MASTER_PROCESS:
         print("\n\nTraining Complete.")     # print completion message
