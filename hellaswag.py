@@ -84,7 +84,7 @@ def render(example: dict) -> tuple:
 def evaluate(
         model: Optional[GPT2_124M] = None,   # uses HuggingFace GPT2LMHeadModel() if None
         ddp_world_size: int = 1,
-        ddp_rank: int = 0,
+        ddp_local_rank: int = 0,
         model_type: str = "gpt2",
         split: str = "val",
         compile: bool = False,
@@ -125,7 +125,7 @@ def evaluate(
 
         # a GPU rank will process every ddp_world_size'th example, where
         # each example is processed by exactly one GPU with no overlaps:
-        if i % ddp_world_size != ddp_rank:     
+        if i % ddp_world_size != ddp_local_rank:     
             continue
 
         tokens, mask, label = render(example)
