@@ -1,16 +1,16 @@
 import torch
 from torch import nn
+from torch.utils.data import DataLoader, DistributedSampler
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed import init_process_group, destroy_process_group
+import torch.distributed as dist
 import matplotlib.pyplot as plt
 import numpy as np
 import math
-from dataset import TinyShakespeare, FineWebEdu
-from config import *    # import all global variables (all in caps)
 import os
-from torch.utils.data import DataLoader, DistributedSampler
-from torch.distributed import init_process_group, destroy_process_group
-from torch.nn.parallel import DistributedDataParallel as DDP
-import torch.distributed as dist
+from config import *    # import all global variables (all in caps)
+from dataset import TinyShakespeare, FineWebEdu
 from model import GPT2_124M, GPT2Config
 from tqdm_bars import tqdmGPT
 from hellaswag import evaluate
