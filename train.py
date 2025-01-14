@@ -180,7 +180,7 @@ def train(compile: bool = True) -> tuple:
             scheduler.step()                    
             lr = scheduler.get_last_lr()[0] 
 
-        # ----- GET VALIDATION LOSS ----- #
+        # ----- GET VALIDATION LOSS + HELLASWAG EVAL ----- #
         # run validation every VAL_INTERVAL iterations OR in the final iteration of each epoch
         if (i % VAL_INTERVAL == 0) or (local_i == iters_per_epoch - 1): 
             model.eval()
@@ -196,9 +196,12 @@ def train(compile: bool = True) -> tuple:
             if MASTER_PROCESS:
                 val_losses[i] = val_loss                            # rank 0 stores the average validation loss (calculated across all GPUs)
             # ----- HellaSwag EVALUATION ----- #    # N.B. NEEDS UPDATING TO USE DDP
-            n_correct, n_total = evaluate(model)    # evaluate on HellaSwag dataset
-            score = n_correct / n_total             # percentage accuracy
+            n_correct, n_total = evaluate(model, DDP_WORLD_SIZE, DDP_RANK)    # evaluate on HellaSwag dataset
+            if DDP_WORLD_SIZE > 1:
+                n_correct = value_reduce(n_correct, DEVICE)         # sum and then synchronise correct counts across all GPUs
+                n_total = value_reduce(n_total, DEVICE)             # sum and then synchronise total counts across all GPUs
             if MASTER_PROCESS:
+                score = n_correct / n_total * 100   # percentage accuracy on HellaSwag dataset
                 hellaswag_scores[i] = score         # store HellaSwag score
         
         # ----- LOG PROGRESS & STATS ----- #
@@ -219,6 +222,20 @@ def train(compile: bool = True) -> tuple:
         destroy_process_group()             # clean up DDP process group
 
     return model, train_losses, val_losses, learning_rates
+
+
+def value_reduce(value: float, device: torch.device) -> float:
+    """
+    Helper function to reduce a single value across all GPU processes.
+    Used for summing HellaSwag `n_correct` and `n_total` counts across all GPUs.
+    
+    A single value is converted into a PyTorch `tensor` since `dist.all_reduce()` 
+    only operates with tensors. The value is summed and synchronised across all 
+    GPU processes and the final value is extracted and returned.
+    """
+    tensor = torch.tensor(value, dtype=torch.long, device=device)   # convert a single value to tensor
+    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+    return tensor.item()
 
 
 def cycle(iterable):
