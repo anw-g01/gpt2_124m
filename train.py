@@ -13,6 +13,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 from model import GPT2_124M, GPT2Config
 from tqdm_bars import tqdmGPT
+from hellaswag import evaluate
 
 def initialise_ddp() -> tuple:
     """
@@ -38,7 +39,7 @@ def initialise_ddp() -> tuple:
     return ddp_rank, ddp_local_rank, ddp_world_size, device, master_process
 
 
-def train() -> tuple:
+def train(compile: bool = True) -> tuple:
     """
     Train a PyTorch model using gradient accumulation, mixed precision, and cosine decay learning rate scheduling.
     Selected hyperparameters are close to GPT-2 and GPT-3 model choices by OpenAI, released in any papers.
@@ -98,7 +99,8 @@ def train() -> tuple:
     # ---------- MODEL INSTANCE ---------- #
         print(f"\nloading model, optimiser and scheduler...\n")
 
-    total_iterations = len(train_loader) * EPOCHS * DDP_WORLD_SIZE  # total iterations (mini-batches) across ALL GPUs
+    iters_per_epoch = len(train_loader)             # no. of available mini-batches in one epoch (per GPU)    
+    total_iterations = iters_per_epoch * EPOCHS     # total no. of iterations across full training (per GPU)
 
     model = GPT2_124M(GPT2Config(vocab_size=50304)).to(DEVICE)      # increase vocab size to (2^7 * 3 * 131)
     optimiser = model.configure_optim(WEIGHT_DECAY, MAX_LEARNING_RATE, DEVICE.type)
@@ -108,10 +110,11 @@ def train() -> tuple:
         eta_min=0.1*MAX_LEARNING_RATE               # set minimum learning rate to 10% of the maximum
     )
     
-    model = torch.compile(model)    
-    if DDP_WORLD_SIZE > 1:                                          # if using DDP
-        model = DDP(model, device_ids=[DDP_LOCAL_RANK])             # wrap model in a PyTorch DDP container
-    # raw_model = model.module if DDP_WORLD_SIZE > 1 else model     # to access the "raw" unwrapped model
+    model = torch.compile(model) if compile else model      # compile model if specified
+    # if using DDP, wrap model in a PyTorch DDP container
+    if DDP_WORLD_SIZE > 1:                                          
+        model = DDP(model, device_ids=[DDP_LOCAL_RANK])             
+    # raw_model = model.module if DDP_WORLD_SIZE > 1 else model       # to access the "raw" unwrapped model
 
     if MASTER_PROCESS:
         print(f"\ncompiling model...")
@@ -119,23 +122,27 @@ def train() -> tuple:
 
     # ---------- MAIN TRAINING LOOP ---------- # 
 
-    if MASTER_PROCESS:
-        print(f"\nrunning validation every {VAL_INTERVAL} iterations")
-        print(f"running {ITERATIONS:,} total iterations...\n")
-        train_losses = np.empty(ITERATIONS)
-        val_losses = np.full(ITERATIONS, np.nan)    # initialise with NaNs (due to interval usage)
-        learning_rates = np.empty(ITERATIONS)
+        print(f"\ntraining for {EPOCHS} epochs ({iters_per_epoch:,} iterations per epoch per GPU)")
+        print(f"running {total_iterations:,} parallel iterations across {DDP_WORLD_SIZE} GPUs...\n")
+        print(f"\nrunning validation and HellaSwag eval every {VAL_INTERVAL} iterations")
+        train_losses = np.zeros(total_iterations)
+        val_losses = np.full(total_iterations, np.nan)  # initialise with NaNs (due to interval usage)
+        learning_rates = np.zeros(total_iterations)
+        hellaswag_scores = np.zeros(total_iterations)   # store HellaSwag scores during evaluation
     
     pbar = tqdmGPT(     # create a custom tqdm bar for printing/logging stats (see tqdm_bars.py)
-        iterable=range(ITERATIONS),
+        iterable=range(total_iterations),
         n_tokens=(BATCH_SIZE * BLOCK_SIZE),         # custom input: tokens processed in input batch
         acc_steps=GRAD_ACCUM_STEPS,                 # custom input: gradient accumulation steps
         desc="train_loss: ? | val_losses: ? |",
-        total=ITERATIONS,
+        total=total_iterations,
         disable=(DDP_LOCAL_RANK != 0),    # show progress bar for only the first GPU process (DDP)
     )
 
-    for i in pbar:     # pbar acts as a normal iterator when disabled (for non-master GPU processes)
+    for i in pbar:    # pbar acts as a normal iterator when disabled (for non-master GPU processes)
+
+        epoch = i // iters_per_epoch    # current epoch number
+        local_i = i % iters_per_epoch   # current iteration within the current epoch
 
         # ----- TRAINING - GRADIENT ACCUMULATION ----- #
         model.train()
@@ -159,7 +166,7 @@ def train() -> tuple:
                 loss.backward()                 # no synchronisation for a single GPU
         # calculate and synchronise the average loss across all GPUs:
         if DDP_WORLD_SIZE > 1:                                              
-            dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)               # all_reduce places the same final averaged result back on all GPUs
+            dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)    # all_reduce places the same final averaged result back on all GPUs
         # clip gradients to prevent exploding gradients and update model parameters:
         nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)          
         optimiser.step()                                                    
@@ -173,9 +180,9 @@ def train() -> tuple:
             scheduler.step()                    
             lr = scheduler.get_last_lr()[0] 
 
-        # ----- VALIDATION LOOP ----- #
-        # run validation every VAL_INTERVAL iterations OR on the final iteration
-        if (i % VAL_INTERVAL == 0) or (i == ITERATIONS - 1): 
+        # ----- GET VALIDATION LOSS ----- #
+        # run validation every VAL_INTERVAL iterations OR in the final iteration of each epoch
+        if (i % VAL_INTERVAL == 0) or (local_i == iters_per_epoch - 1): 
             model.eval()
             val_loss = 0
             with torch.no_grad():
@@ -183,9 +190,16 @@ def train() -> tuple:
                     X, y = next(val_iter)
                     X_val, y_val = X.to(DEVICE), y.to(DEVICE)
                     _, loss = model(X_val, y_val)
-                    val_loss += loss.item() / VAL_ACCUM_STEPS    # equivalent to val_loss /= VAL_ACCUM_STEPS in the final iteration
+                    val_loss += loss.item() / VAL_ACCUM_STEPS       # equivalent to val_loss /= VAL_ACCUM_STEPS in the final iteration
+            if DDP_WORLD_SIZE > 1:
+                dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)    # synchronise validation loss across all GPUs
             if MASTER_PROCESS:
                 val_losses[i] = val_loss
+            # ----- HellaSwag EVALUATION ----- #    # N.B. NEEDS UPDATING TO USE DDP
+            n_correct, n_total = evaluate(model)    # evaluate on HellaSwag dataset
+            score = n_correct / n_total             # percentage accuracy
+            if MASTER_PROCESS:
+                hellaswag_scores[i] = score         # store HellaSwag score
         
         # ----- LOG PROGRESS & STATS ----- #
         if MASTER_PROCESS:
@@ -193,6 +207,7 @@ def train() -> tuple:
             train_losses[i] = train_loss.item()
             if i % LOG_INTERVAL == 0:
                 pbar.set_description_str(
+                    f"epoch: {epoch + 1}/{EPOCHS} | "
                     f"train_loss: {train_loss.item():.3f} | "
                     f"val_loss: {val_loss:.3f}"
                 )
