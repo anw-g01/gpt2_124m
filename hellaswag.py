@@ -117,7 +117,7 @@ def evaluate(
         iterable=iterate_examples(split),
         total=DATASETS[split][1],               # length of examples (39,905 for "train")
         desc=f"correct: 0/0",
-        disable=not verbose
+        disable=(not verbose and ddp_world_size != 1)   # progress bar only for single processes
     )
 
     total, correct = 0, 0
@@ -179,6 +179,7 @@ def eval1() -> None:
     `[===============] 10,042/10,042 (100.0%) | correct: 2,968/10,042 (29.6%) [01:34<00:00, ? examples/s]`
 
     Example final score output: `correct: 2,968/10,042 (29.6%)`
+    N.B. Progress bar is disabled for multi-GPU evaluation due to shared examples.
     """
 
     correct, total = evaluate(verbose=True)     # evaluate GPT-2 (124M) on HellaSwag
@@ -197,6 +198,7 @@ def eval2() -> None:
     weights, i.e. model "guessing". 
     
     Example final score output: 2,555/10,042 (25.4%)
+    N.B. Progress bar is disabled for multi-GPU evaluation due to shared examples.
     """
     
     correct, total = evaluate(
