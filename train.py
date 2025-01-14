@@ -68,7 +68,7 @@ def train(compile: bool = True) -> tuple:
     # ---------- LOAD DATA ---------- # 
 
     # train_loader, val_loader = load_shakespeare(DDP_WORLD_SIZE, DDP_LOCAL_RANK)    # load training and validation data
-
+    DDP_WORLD_SIZE = 8
     train_loader, val_loader = load_fineweb(DDP_WORLD_SIZE, DDP_LOCAL_RANK)    # load training and validation data
     train_iter, val_iter = cycle(train_loader), cycle(val_loader)              # create infinite iterators
     
@@ -78,7 +78,7 @@ def train(compile: bool = True) -> tuple:
         
         tok_per_gpu = BATCH_SIZE * BLOCK_SIZE    # tokens processed per GPU per mini-batch
         GRAD_ACCUM_STEPS = int(TOKENS_PER_BATCH // (tok_per_gpu * DDP_WORLD_SIZE))  
-        print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}] ({GRAD_ACCUM_STEPS} acc. steps)")
+        print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}] ({GRAD_ACCUM_STEPS} acc. steps per GPU)")
         total_batches = len(train_loader) * DDP_WORLD_SIZE    # total mini-batches in ONE EPOCH for all GPUs
         # calculate no. of complete batches (called chunks) per epoch for all GPUs:
         chunks_per_epoch_train = int(math.ceil(total_batches / (GRAD_ACCUM_STEPS * DDP_WORLD_SIZE)))    
@@ -87,14 +87,16 @@ def train(compile: bool = True) -> tuple:
         print(f"=> {chunks_per_epoch_train:,} chunks/epoch ({chunks_per_gpu:,} per GPU)")
 
         print("\n*-------------- VALIDATION --------------*")
-        val_effective_batch = BATCH_SIZE * BLOCK_SIZE * VAL_ACCUM_STEPS * DDP_WORLD_SIZE
+        val_effective_batch = BATCH_SIZE * BLOCK_SIZE * VAL_ACCUM_STEPS 
         print(f"effective batch: {val_effective_batch:,} tokens")
-        print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}] (with {VAL_ACCUM_STEPS} acc. steps)")
+        print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}] (with {VAL_ACCUM_STEPS // DDP_WORLD_SIZE} acc. steps per GPU)")
         total_val_batches = len(val_loader) * DDP_WORLD_SIZE
-        chunks_per_epoch_val = int(math.ceil(total_val_batches / (VAL_ACCUM_STEPS * DDP_WORLD_SIZE)))
+        chunks_per_epoch_val = int(math.ceil(total_val_batches / VAL_ACCUM_STEPS))
         val_chunks_per_gpu = int(math.ceil(chunks_per_epoch_val / DDP_WORLD_SIZE))
         print(f"DataLoader batches: {total_val_batches:,} ({len(val_loader):,} per GPU)")
         print(f"=> {chunks_per_epoch_val:,} chunks/epoch ({val_chunks_per_gpu:,} per GPU)")
+
+        import sys; sys.exit()
 
     # ---------- MODEL INSTANCE ---------- #
         print(f"\nloading model, optimiser and scheduler...\n")
@@ -186,12 +188,13 @@ def train(compile: bool = True) -> tuple:
             model.eval()
             val_loss = 0
             with torch.no_grad():
-                for _ in range(VAL_ACCUM_STEPS):   
+                steps = VAL_ACCUM_STEPS // DDP_WORLD_SIZE
+                for _ in range(steps):   
                     X, y = next(val_iter)
                     X_val, y_val = X.to(DEVICE), y.to(DEVICE)
                     with torch.autocast(device_type=DEVICE.type, dtype=torch.bfloat16):     
                         _, loss = model(X_val, y_val)
-                    loss /= VAL_ACCUM_STEPS
+                    loss /= steps
                     val_loss += loss.detach()           
             if DDP_WORLD_SIZE > 1:
                 dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)     # average and synchronise validation loss across all GPUs
