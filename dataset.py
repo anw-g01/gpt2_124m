@@ -6,7 +6,7 @@ import os
 from config import DATA_ROOT
 from fineweb import SHARD_SIZE    
 
-LAST_SHARD_SIZE = 82_590_278
+LAST_SHARD_SIZE = 82_590_278    # no. of tokens in the last shard from downloading FineWeb-Edu (sample-10BT)
 
 class FineWebEdu(Dataset):
     """
@@ -41,7 +41,10 @@ class FineWebEdu(Dataset):
         shards = [os.path.join(self.root, f) for f in names]               # construct full paths, sorted by name (ascending order)
         assert len(shards) > 0, f"no shards found for split='{split}' in {self.root}"
         if self.verbose:
-            n = len(shards) * SHARD_SIZE * 1e-9
+            if split == "val":      # validation set (single shard with 100M tokens)
+                n = len(shards) * SHARD_SIZE * 1e-9
+            else:
+                n = ((len(shards) - 1) * SHARD_SIZE + LAST_SHARD_SIZE) * 1e-9
             print(f'found {len(shards):,} shard(s) for "{split}" split -> ({n:.2f} B tokens)')
         return shards   # return list of full paths to shards
 
@@ -73,7 +76,7 @@ class FineWebEdu(Dataset):
         if local_idx + chunk_size >= tokens.shape[0]:           # if the current shard will be exhausted
             X1 = tokens[local_idx:]                             # store available tokens of current shard
             y1 = tokens[local_idx + 1:]                         # corresponding target sequence (next token for each sample)
-            shard_idx = (shard_idx + 1) % len(self.shards)      # move to the next shard (circular indexing)
+            shard_idx += 1                                      # move to the next shard (no circular indexing as the last shard will never cross boundaries)
             tokens = self._load_shard(shard_idx)                # load the next shard
             rem = chunk_size - X1.shape[0]                      # remaining tokens needed for X to complete the chunk 
             
@@ -89,17 +92,35 @@ class FineWebEdu(Dataset):
             else:
                 X, y = X1, y1                       # X, y are unchanged (already filled)
 
+            print(f"\ncrossing shard: {shard_idx - 1} -> {shard_idx} | {idx=:,} | {local_idx=:,} | {rem=:,} | shard {shard_idx} size: {tokens.shape[0] * 1e-6:,.1f}M\n")  
+
         else:       # normal case (no shard boundary crossing)
             X = tokens[local_idx: local_idx + chunk_size]                   # get the input sequence
             y = tokens[local_idx + 1: local_idx + chunk_size + 1]           # get the target sequence (next token for each sample)
+        
+        print(f"\r{idx=:,} | {global_idx=:,} | {shard_idx=} | {local_idx=:,} | shard {shard_idx} size: {tokens.shape[0] * 1e-6:,.1f}M", end="")
+        
         return X.view(self.batch_size, -1), y.view(self.batch_size, -1)     # return with shapes [batch_size, block_size]
 
     def __len__(self):
+        """
+        Example calculations for `batch_size=16` and `block_size=1024`:
+
+        >> idx=598,143 | global_idx=9,799,974,912 | shard_idx=97 | local_idx=99,974,912 | shard 97 size: 100.0M
+        >> crossing shard: 97 -> 98 | local_idx=99,991,296 | rem=7,680 | shard 98 size: 82.6M
+
+        >> idx=603,184 | global_idx=9,882,566,656 | shard_idx=98 | local_idx=82,566,656 | shard 98 size: 82.6M
+
+        This shows that a final `local_idx` of `82,566,656 + 16,284 = 82,583,040` in the last shard was reached,
+        resulting in a leftover of `82,590,278 - 82,583,040 = 7,238` tokens. These last remaining `7,238` tokens
+        will never be used as they are less than a chunk size of `batch_size * block_size = 16,384` and because
+        the total number of batches was calculated to fit within all available tokens using integer division.
+        """
         chunk_size = self.batch_size * self.block_size
         if self.split == "val":
             return (len(self.shards) * SHARD_SIZE) // chunk_size   
         # else, for the training set, account for the last shard holding 82,590,278 tokens 
-        return ((len(self.shards) - 1) * SHARD_SIZE + LAST_SHARD_SIZE) // chunk_size 
+        return ((len(self.shards) - 1) * SHARD_SIZE + LAST_SHARD_SIZE) // chunk_size     
 
 
 class TinyShakespeare(Dataset):
@@ -164,12 +185,12 @@ if __name__ == "__main__":
     # ----- DataLoader EXAMPLES with FineWebEdu Sample-10BT ----- #
 
     train_dataset = FineWebEdu(batch_size, block_size, split="train")
-    # train_sampler = DistributedSampler(
-    #     train_dataset,
-    #     num_replicas=8,
-    #     rank=0,
-    #     shuffle=False
-    # )
+    train_sampler = DistributedSampler(
+        train_dataset,
+        num_replicas=8,
+        rank=0,
+        shuffle=False
+    )
     train_loader = DataLoader(
         train_dataset,
         batch_size=None,            # must be set to None
@@ -178,13 +199,13 @@ if __name__ == "__main__":
         shuffle=False
     )
 
-    print(f"\ntokens per batch: {batch_size * block_size:,} (batch size {batch_size:,})")
-    print(f"{len(train_loader):,} available batches per epoch\n")
+    print(f"\ntokens per mini-batch: {batch_size * block_size:,} (mini-batch size {batch_size:,})")
+    print(f"{len(train_loader):,} available mini-batches per epoch\n")
     
     def cycle(iterable):
         """
         Infinitely cycles over an iterable object (e.g. a `DataLoader`) using a generator.
-        Used over `itertools.cycle()` to prevent memory leaks for large datasets like `FineWebEdu()`.
+        Used in replacement to `itertools.cycle()` to prevent memory leaks for large datasets like `FineWebEdu()`.
         See: https://github.com/pytorch/pytorch/issues/23900
         """
         iterator = iter(iterable)
@@ -194,17 +215,17 @@ if __name__ == "__main__":
             except StopIteration:           # iterator reaches the end
                 iterator = iter(iterable)   # reset the iterator 
 
-    train_iter = cycle(iter(train_loader))
+    train_iter = cycle(train_loader)
 
-    # example traversal through on epoch of the DataLoader
-    n = len(train_loader)
+    # example traversal through one epoch of the DataLoader
+    n = len(train_loader) * 2
     for i in range(n):
-        X, y = next(train_iter)
-        progress_str = (
-            f"\rbatch: {i + 1:,}/{n:,} | "
-            # f"{X.shape, y.shape}"
-        )
-        print(progress_str, end="")
+        _, _ = next(train_iter)     # get next X, y batch
+        # progress_str = (
+        #     f"\rbatch: {i + 1:,}/{n:,} | "
+        #     # f"{X.shape, y.shape}"
+        # )
+        # print(progress_str, end="")
 
     # ----- DataLoader EXAMPLES with FineWebEdu Sample-10BT ----- #
 
