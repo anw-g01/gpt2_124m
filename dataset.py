@@ -91,26 +91,20 @@ class FineWebEdu(Dataset):
                 y = torch.cat((y1, y2), dim=0)      # concatenate y  
             else:
                 X, y = X1, y1                       # X, y are unchanged (already filled)
-
-            print(f"\ncrossing shard: {shard_idx - 1} -> {shard_idx} | {idx=:,} | {local_idx=:,} | {rem=:,} | shard {shard_idx} size: {tokens.shape[0] * 1e-6:,.1f}M\n")  
-
         else:       # normal case (no shard boundary crossing)
             X = tokens[local_idx: local_idx + chunk_size]                   # get the input sequence
             y = tokens[local_idx + 1: local_idx + chunk_size + 1]           # get the target sequence (next token for each sample)
-        
-        print(f"\r{idx=:,} | {global_idx=:,} | {shard_idx=} | {local_idx=:,} | shard {shard_idx} size: {tokens.shape[0] * 1e-6:,.1f}M", end="")
-        
         return X.view(self.batch_size, -1), y.view(self.batch_size, -1)     # return with shapes [batch_size, block_size]
 
     def __len__(self):
         """
         Example calculations for `batch_size=16` and `block_size=1024`:
-
+        ```
         >> idx=598,143 | global_idx=9,799,974,912 | shard_idx=97 | local_idx=99,974,912 | shard 97 size: 100.0M
         >> crossing shard: 97 -> 98 | local_idx=99,991,296 | rem=7,680 | shard 98 size: 82.6M
 
         >> idx=603,184 | global_idx=9,882,566,656 | shard_idx=98 | local_idx=82,566,656 | shard 98 size: 82.6M
-
+        ```
         This shows that a final `local_idx` of `82,566,656 + 16,284 = 82,583,040` in the last shard was reached,
         resulting in a leftover of `82,590,278 - 82,583,040 = 7,238` tokens. These last remaining `7,238` tokens
         will never be used as they are less than a chunk size of `batch_size * block_size = 16,384` and because
@@ -175,7 +169,20 @@ class TinyShakespeare(Dataset):
         X = self.tokens[curr: curr + chunk]
         y = self.tokens[curr + 1: curr + chunk + 1]
         return X.view(self.batch_size, -1), y.view(self.batch_size, -1)
-    
+
+
+def cycle(iterable):
+    """
+    Infinitely cycles over an iterable object (e.g. a `DataLoader`) using a generator.
+    Used in replacement to `itertools.cycle()` to prevent memory leaks for large datasets like `FineWebEdu()`.
+    See: https://github.com/pytorch/pytorch/issues/23900
+    """
+    iterator = iter(iterable)
+    while True:                         
+        try:    
+            yield next(iterator)        # yield the next item in the iterator
+        except StopIteration:           # iterator reaches the end
+            iterator = iter(iterable)   # reset the iterator 
 
 if __name__ == "__main__":
 
@@ -194,38 +201,25 @@ if __name__ == "__main__":
     train_loader = DataLoader(
         train_dataset,
         batch_size=None,            # must be set to None
-        # sampler=train_sampler,      # using a DistributedSampler
+        sampler=train_sampler,      # using a DistributedSampler
         pin_memory=True,
         shuffle=False
     )
 
     print(f"\ntokens per mini-batch: {batch_size * block_size:,} (mini-batch size {batch_size:,})")
-    print(f"{len(train_loader):,} available mini-batches per epoch\n")
+    print(f"{len(train_loader):,} available mini-batches per epoch (per GPU)\n")    # per GPU if using DDP
     
-    def cycle(iterable):
-        """
-        Infinitely cycles over an iterable object (e.g. a `DataLoader`) using a generator.
-        Used in replacement to `itertools.cycle()` to prevent memory leaks for large datasets like `FineWebEdu()`.
-        See: https://github.com/pytorch/pytorch/issues/23900
-        """
-        iterator = iter(iterable)
-        while True:                         
-            try:    
-                yield next(iterator)        # yield the next item in the iterator
-            except StopIteration:           # iterator reaches the end
-                iterator = iter(iterable)   # reset the iterator 
-
     train_iter = cycle(train_loader)
 
     # example traversal through one epoch of the DataLoader
     n = len(train_loader) * 2
     for i in range(n):
-        _, _ = next(train_iter)     # get next X, y batch
-        # progress_str = (
-        #     f"\rbatch: {i + 1:,}/{n:,} | "
-        #     # f"{X.shape, y.shape}"
-        # )
-        # print(progress_str, end="")
+        X, y = next(train_iter)     # get next X, y batch
+        progress_str = (
+            f"\rbatch: {i + 1:,}/{n:,} | "
+            f"{X.shape, y.shape}"
+        )
+        print(progress_str, end="")
 
     # ----- DataLoader EXAMPLES with FineWebEdu Sample-10BT ----- #
 
