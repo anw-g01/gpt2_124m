@@ -83,6 +83,8 @@ def render(example: dict) -> tuple:
 @torch.no_grad()
 def evaluate(
         model: Optional[GPT2_124M] = None,   # uses HuggingFace GPT2LMHeadModel() if None
+        ddp_world_size: int = 1,
+        ddp_rank: int = 0,
         model_type: str = "gpt2",
         split: str = "val",
         compile: bool = False,
@@ -120,14 +122,22 @@ def evaluate(
 
     total, correct = 0, 0
     for i, example in enumerate(pbar):
+
+        # a GPU rank will process every ddp_world_size'th example, where
+        # each example is processed by exactly one GPU with no overlaps:
+        if i % ddp_world_size != ddp_rank:     
+            continue
+
         tokens, mask, label = render(example)
         T, M = tokens.to(device), mask.to(device)
 
         # get all logits from forward pass
-        if using_model:
-            logits, _ = model(T)                # get logits from GPT_124M() (see from model.py)
-        else:
-            logits = model(T).logits             # logits from HuggingFace model
+        with torch.no_grad():
+            with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                if using_model:
+                    logits, _ = model(T)                # get logits from GPT_124M() (see from model.py)
+                else:
+                    logits = model(T).logits             # logits from HuggingFace model
         
         P = logits[:, :-1, :].contiguous()      # remove last prediction (nothing to predict after ending)
         T = T[:, 1:].contiguous()               # remove first token (no previous token to predict it)
