@@ -89,7 +89,7 @@ def train(compile: bool = True) -> tuple:
         print("\n*-------------- VALIDATION --------------*")
         val_effective_batch = BATCH_SIZE * BLOCK_SIZE * VAL_ACCUM_STEPS * DDP_WORLD_SIZE
         print(f"effective batch: {val_effective_batch:,} tokens")
-        print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}] ({VAL_ACCUM_STEPS} acc. steps)")
+        print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}] (with {VAL_ACCUM_STEPS} acc. steps)")
         total_val_batches = len(val_loader) * DDP_WORLD_SIZE
         chunks_per_epoch_val = int(math.ceil(total_val_batches / (VAL_ACCUM_STEPS * DDP_WORLD_SIZE)))
         val_chunks_per_gpu = int(math.ceil(chunks_per_epoch_val / DDP_WORLD_SIZE))
@@ -151,10 +151,10 @@ def train(compile: bool = True) -> tuple:
         for micro_step in range(GRAD_ACCUM_STEPS):
             X, y = next(train_iter)                                                 # get next training mini-batch
             X_train, y_train = X.to(DEVICE), y.to(DEVICE)                           # move to GPU
-            with torch.autocast(device_type=DEVICE.type, dtype=torch.bfloat16):     # mixed precision
+            with torch.autocast(device_type=DEVICE.type, dtype=torch.bfloat16):     # mixed precision (use bfloat16)
                 _, loss = model(X_train, y_train)
             loss /= GRAD_ACCUM_STEPS                                                # scale loss to mimic full total batch average
-            train_loss += loss.detach()                                             # prevent carry over of computational graph
+            train_loss += loss.detach()         # keep as a tensor (for performing all_reduce)
             
             if DDP_WORLD_SIZE > 1:                                                  # could also use "contextlib.nullcontext()"
                 if micro_step == GRAD_ACCUM_STEPS - 1:
@@ -186,17 +186,19 @@ def train(compile: bool = True) -> tuple:
             model.eval()
             val_loss = 0
             with torch.no_grad():
-                for _ in range(VAL_ACCUM_STEPS // DDP_WORLD_SIZE):   
+                for _ in range(VAL_ACCUM_STEPS):   
                     X, y = next(val_iter)
                     X_val, y_val = X.to(DEVICE), y.to(DEVICE)
-                    _, loss = model(X_val, y_val)
-                    val_loss += loss.item() / VAL_ACCUM_STEPS       # equivalent to val_loss /= VAL_ACCUM_STEPS in the final iteration
+                    with torch.autocast(device_type=DEVICE.type, dtype=torch.bfloat16):     
+                        _, loss = model(X_val, y_val)
+                    loss /= VAL_ACCUM_STEPS
+                    val_loss += loss.detach()           
             if DDP_WORLD_SIZE > 1:
-                dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)     # average synchronise validation loss across all GPUs
+                dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)     # average and synchronise validation loss across all GPUs
             if MASTER_PROCESS:
                 val_losses[i] = val_loss                            # rank 0 stores the average validation loss (calculated across all GPUs)
             # ----- HellaSwag EVALUATION ----- #    # N.B. NEEDS UPDATING TO USE DDP
-            n_correct, n_total = evaluate(model, DDP_WORLD_SIZE, DDP_RANK)    # evaluate on HellaSwag dataset
+            n_correct, n_total = evaluate(model, DDP_WORLD_SIZE, DDP_LOCAL_RANK)    # evaluate on HellaSwag dataset
             if DDP_WORLD_SIZE > 1:
                 n_correct = value_reduce(n_correct, DEVICE)         # sum and then synchronise correct counts across all GPUs
                 n_total = value_reduce(n_total, DEVICE)             # sum and then synchronise total counts across all GPUs
