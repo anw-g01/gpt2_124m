@@ -186,15 +186,15 @@ def train(compile: bool = True) -> tuple:
             model.eval()
             val_loss = 0
             with torch.no_grad():
-                for _ in range(VAL_ACCUM_STEPS):
+                for _ in range(VAL_ACCUM_STEPS // DDP_WORLD_SIZE):   
                     X, y = next(val_iter)
                     X_val, y_val = X.to(DEVICE), y.to(DEVICE)
                     _, loss = model(X_val, y_val)
                     val_loss += loss.item() / VAL_ACCUM_STEPS       # equivalent to val_loss /= VAL_ACCUM_STEPS in the final iteration
             if DDP_WORLD_SIZE > 1:
-                dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)    # synchronise validation loss across all GPUs
+                dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)     # average synchronise validation loss across all GPUs
             if MASTER_PROCESS:
-                val_losses[i] = val_loss
+                val_losses[i] = val_loss                            # rank 0 stores the average validation loss (calculated across all GPUs)
             # ----- HellaSwag EVALUATION ----- #    # N.B. NEEDS UPDATING TO USE DDP
             n_correct, n_total = evaluate(model)    # evaluate on HellaSwag dataset
             score = n_correct / n_total             # percentage accuracy
@@ -203,7 +203,7 @@ def train(compile: bool = True) -> tuple:
         
         # ----- LOG PROGRESS & STATS ----- #
         if MASTER_PROCESS:
-            learning_rates[i] = lr                      # populate arrays for plotting
+            learning_rates[i] = lr                      
             train_losses[i] = train_loss.item()
             if i % LOG_INTERVAL == 0:
                 pbar.set_description_str(
@@ -242,9 +242,11 @@ def load_fineweb(ddp_world_size: int, ddp_rank: int) -> tuple:
     amongst GPU processes which independently handles its batch of shard loading and processing. 
 
     All shuffling must be set to False to prevent constant shard loading. Utilising `self.cache()` to
-    store the current shard being processed improves continuous iteration until the next shard. This
-    is not the case for the validation set which only occurs over one shard file.
+    store the current shard being processed improves continuous iteration until the next shard.
+    The validation set only occurs over one shard file, hence only a single shard has to be loaded once
+    and so shuffling can occur without major overheads.
     """
+    # training dataset:
     train_dataset = FineWebEdu(BATCH_SIZE, BLOCK_SIZE, split="train")
     train_sampler = DistributedSampler(
         train_dataset,
