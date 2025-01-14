@@ -5,7 +5,6 @@ from dataclasses import dataclass
 import tiktoken
 import inspect
 import math
-from config import ITERATIONS
 
 @dataclass
 class GPT2Config:
@@ -202,14 +201,3 @@ class GPT2_124M(nn.Module):
         for i in range(x):
             out[i] = x[i:max_length].tolist()
         return out
-    
-    def save(self, file_name=None):
-        """
-        Save and download the model's weights in a PyTorch `.pth` file.
-        """
-        if file_name is None:
-            batch_size = 512    # batch_size * grad_accum_steps * ddp_world_size
-            file_name = f"GPT2_124M_BS({batch_size})_ITER({ITERATIONS})"
-        torch.save(self.state_dict(), f"{file_name}.pth")
-        print(f"model weights saved as: {file_name}")
-
