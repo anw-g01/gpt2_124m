@@ -14,7 +14,7 @@ class tqdmGPT(tqdm):
 
     def __init__(self, *args, acc_steps: int, n_tokens: int, **kwargs):
         bar_format_str = (
-            "[{bar:15}] {percentage:.1f}% | i: {n_fmt}/{total_fmt} | "
+            "[{bar:15}] {percentage:.1f}% | iter: {n_fmt}/{total_fmt} | "
             "{tok/s} | {s/batch} ({ms/iter}) "
             "[{elapsed}<{remaining}, {batches/s}] | {desc}"
         )
