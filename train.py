@@ -116,18 +116,20 @@ def train_gpt2(
 
         print(f"\ntraining for {EPOCHS} epochs ({iters_per_epoch:,} iterations per epoch per GPU)")
         print(f"running {total_iterations:,} parallel iterations across {DDP_WORLD_SIZE} GPUs...\n")
-        print(f"\nrunning validation and HellaSwag eval every {VAL_INTERVAL} iterations")
+        n_validations = total_iterations // VAL_INTERVAL        # no. of validation runs (roughly due to epoch-ends)
+        print(f"\nrunning validation and HellaSwag eval every {VAL_INTERVAL} iterations (total ~{n_validations:,})\n")
         train_losses = np.zeros(total_iterations)               # store training losses (for plotting)
         val_losses = np.full(total_iterations, np.nan)          # initialise with NaNs due to interval storing
         hellaswag_scores = np.full(total_iterations, np.nan)    # store HellaSwag scores (interval storage)
         learning_rates = np.zeros(total_iterations)             # store learning rates (optional plotting)
-    
+        # create a log directory to store model checkpoints:
+        os.makedirs(LOG_DIR, exist_ok=True)                     # create directory if it doesn't exist
+
     # create a custom tqdm bar for printing/logging stats (see tqdm_bars.py):
     pbar = tqdmGPT(     
         iterable=range(total_iterations),
         n_tokens=(BATCH_SIZE * BLOCK_SIZE),     # custom input: training tokens processed in input batch
         acc_steps=GRAD_ACCUM_STEPS,             # custom input: gradient accumulation steps
-        total=total_iterations,
         disable=(DDP_LOCAL_RANK != 0),          # show progress bar for only the first GPU process (DDP)
     )
 
@@ -159,8 +161,7 @@ def train_gpt2(
         # clip gradients to prevent exploding gradients and update model parameters:
         nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)          
         optimiser.step()                                                    
-        
-        # ----- LEARNING RATE SCHEDULER ----- #
+        # update the learning rate (linear warmup + cosine decay):
         if i < WARMUP_STEPS:
             lr = MAX_LEARNING_RATE * (i + 1) / WARMUP_STEPS     # linear warmup to LEARNING_RATE
             for param_group in optimiser.param_groups:
@@ -186,7 +187,7 @@ def train_gpt2(
             n_correct, n_total = evaluate(model, DDP_WORLD_SIZE, DDP_LOCAL_RANK)    # evaluate on HellaSwag dataset
 
         # ----- ALL-REDUCE - DDP COMMUNICATION (FOR LOGGING) ----- #
-        if DDP_WORLD_SIZE > 1:
+        if DDP_WORLD_SIZE > 1:      # only if using DDP
             # average and synchronise single-value loss tensors across all GPUs:
             # (all_reduce places the same final averaged result back on all GPUs)
             dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)   # only for logging (loss.backward() already built-in gradient synchronisation)
@@ -225,6 +226,25 @@ def train_gpt2(
                         f"train_loss: {train_losses[i]:.3f} | val_loss: {val_losses[i]:.3f} | "
                         f"HellaSwag: {hellaswag_scores[i]:.1f}% | elapsed: [{t}]\n"
                     )
+                # --- WRITE MODEL CHECKPOINT TO LOG_DIR --- #
+                raw_model = model.module if DDP_WORLD_SIZE > 1 else model       # access the "raw" unwrapped model if DDP
+                # create a sub-directory for each checkpoint inside LOG_DIR:
+                checkpoint_dir = os.path.join(LOG_DIR, f"checkpoint_epoch_{epoch + 1:02d}_iter_{i:05d}")
+                checkpoint_path = os.path.join(checkpoint_dir, f"model.pt")     # path to save PyTorch model weights
+                checkpoint = {                                                  # dictionary to store all metrics
+                    "epoch": epoch + 1, 
+                    "iteration": i,
+                    "model_state_dict": raw_model.state_dict(),
+                    "optimiser_state_dict": optimiser.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                }
+                torch.save(checkpoint, checkpoint_path)                         # save model checkpoint
+                # save further metrics as numpy arrays:
+                for name, arr in [
+                    ('train_losses', train_losses), ('val_losses', val_losses),
+                    ('hellaswag_scores', hellaswag_scores), ('learning_rates', learning_rates)
+                ]:
+                    np.save(os.path.join(checkpoint_dir, f"{name}.npy"), arr)            # save numpy array to directory
 
     # ---------- TRAINING COMPLETE ---------- #
     if MASTER_PROCESS:
@@ -234,7 +254,7 @@ def train_gpt2(
     if DDP_WORLD_SIZE > 1:                          
         destroy_process_group()                     
 
-    return model, train_losses, val_losses, hellaswag_scores, learning_rates
+    return model
 
 
 def value_reduce(value: float, device: torch.device) -> float:
