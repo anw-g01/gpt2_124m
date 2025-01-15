@@ -11,7 +11,7 @@ import math
 import os
 import datetime
 from config import *    # import all global variables (all in caps)
-from dataset import TinyShakespeare, FineWebEdu
+from datasets import TinyShakespeare, FineWebEdu
 from model import GPT2_124M, GPT2Config
 from tqdm_bars import tqdmGPT
 from hellaswag import evaluate
@@ -40,45 +40,34 @@ def initialise_ddp() -> tuple:
     return ddp_rank, ddp_local_rank, ddp_world_size, device, master_process
 
 
-def train(
+def train_gpt2(
         compile: bool = True,
         verbose: str = True
     ) -> tuple:
     """
-    Train a PyTorch model using gradient accumulation, mixed precision, and cosine decay learning rate scheduling.
-    Selected hyperparameters are close to GPT-2 and GPT-3 model choices by OpenAI, released in any papers.
-    - The function uses gradient accumulation with mini-batch processing, if GPU memory is constrained.
-    - Mixed precision training (with `bfloat16`) is implemented for efficiency with modern GPUs.
-    - Learning rate scheduling includes a linear warm-up phase (to `LEARNING_RATE`) followed by a cosine decay rate.
-    - Validation is performed periodically based on `VAL_INTERVAL` (see `config.py`).
+    Train a new model instance of `GPT2_124M()` on the `FineWebEdu()` dataset using the specified hyperparameters in `config.py.
     -----
     Returns:
-        `tuple`: A tuple containing:
-            - `model` (`torch.nn.Module`): The trained model with updated weights, specificly `GPT2_124M(GPT2Config(vocab_size=50304))`. 
-            - `train_losses` (`np.ndarray`): Array of training losses recorded at each iteration.
-            - `val_losses` (`np.ndarray`): Array of validation losses recorded every `VAL_INTERVAL` iterations.
-            - `learning_rates` (`np.ndarray`): Learning rate values tracked at each iteration.
+    - `model` (`torch.nn.Module`): The trained model with updated weights, specificly `GPT2_124M(GPT2Config(vocab_size=50304))`. 
     """
 
     # get distributed parameters from environment variables (if using DDP)
     DDP_RANK, DDP_LOCAL_RANK, DDP_WORLD_SIZE, DEVICE, MASTER_PROCESS = initialise_ddp()
 
-    torch.manual_seed(2001)                         # for consistent intantiations of models across all processes
+    torch.manual_seed(2001)    # for consistent intantiations of models across all processes
     if torch.cuda.is_available():
         torch.cuda.manual_seed(2001)
-
-    torch.set_float32_matmul_precision("high")      # set global tensor dtype as TensorFloat32 
+    torch.set_float32_matmul_precision("high")    # set global tensor dtype as TensorFloat32 
 
     # ---------- LOAD DATA ---------- # 
 
-    # train_loader, val_loader = load_shakespeare(DDP_WORLD_SIZE, DDP_LOCAL_RANK)    # load training and validation data
-    train_loader, val_loader = load_fineweb(DDP_WORLD_SIZE, DDP_LOCAL_RANK)    # load training and validation data
-    train_iter, val_iter = cycle(train_loader), cycle(val_loader)              # create infinite iterators
+    # train_loader, val_loader = load_shakespeare(DDP_WORLD_SIZE, DDP_LOCAL_RANK)     # tiny/big shakespeare dataset
+    train_loader, val_loader = load_fineweb(DDP_WORLD_SIZE, DDP_LOCAL_RANK)         # load training and validation data
+    train_iter, val_iter = cycle(train_loader), cycle(val_loader)                   # create infinite iterators
     
-    if MASTER_PROCESS:    # print in command window for only one GPU
+    if MASTER_PROCESS:    # only GPU rank 0 prints to the command window
         print("\n*-------------- TRAINING --------------*")
         print(f"effective batch: {TOKENS_PER_BATCH:,} tokens")
-        
         tok_per_gpu = BATCH_SIZE * BLOCK_SIZE    # tokens processed per GPU per mini-batch
         GRAD_ACCUM_STEPS = int(TOKENS_PER_BATCH // (tok_per_gpu * DDP_WORLD_SIZE))  
         print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}] ({GRAD_ACCUM_STEPS} acc. steps per GPU)")
@@ -128,18 +117,18 @@ def train(
         print(f"\ntraining for {EPOCHS} epochs ({iters_per_epoch:,} iterations per epoch per GPU)")
         print(f"running {total_iterations:,} parallel iterations across {DDP_WORLD_SIZE} GPUs...\n")
         print(f"\nrunning validation and HellaSwag eval every {VAL_INTERVAL} iterations")
-        train_losses = np.zeros(total_iterations)
-        val_losses = np.full(total_iterations, np.nan)  # initialise with NaNs (due to interval usage)
-        learning_rates = np.zeros(total_iterations)
-        hellaswag_scores = np.zeros(total_iterations)   # store HellaSwag scores during evaluation
+        train_losses = np.zeros(total_iterations)               # store training losses (for plotting)
+        val_losses = np.full(total_iterations, np.nan)          # initialise with NaNs due to interval storing
+        hellaswag_scores = np.full(total_iterations, np.nan)    # store HellaSwag scores (interval storage)
+        learning_rates = np.zeros(total_iterations)             # store learning rates (optional plotting)
     
-    pbar = tqdmGPT(     # create a custom tqdm bar for printing/logging stats (see tqdm_bars.py)
+    # create a custom tqdm bar for printing/logging stats (see tqdm_bars.py):
+    pbar = tqdmGPT(     
         iterable=range(total_iterations),
-        n_tokens=(BATCH_SIZE * BLOCK_SIZE),         # custom input: tokens processed in input batch
-        acc_steps=GRAD_ACCUM_STEPS,                 # custom input: gradient accumulation steps
-        desc="train_loss: ? | val_losses: ? |",
+        n_tokens=(BATCH_SIZE * BLOCK_SIZE),     # custom input: training tokens processed in input batch
+        acc_steps=GRAD_ACCUM_STEPS,             # custom input: gradient accumulation steps
         total=total_iterations,
-        disable=(DDP_LOCAL_RANK != 0),    # show progress bar for only the first GPU process (DDP)
+        disable=(DDP_LOCAL_RANK != 0),          # show progress bar for only the first GPU process (DDP)
     )
 
     for i in pbar:    # pbar acts as a normal iterator when disabled (for non-master GPU processes)
@@ -157,8 +146,8 @@ def train(
             with torch.autocast(device_type=DEVICE.type, dtype=torch.bfloat16):     # mixed precision (use bfloat16)
                 _, loss = model(X_train, y_train)
             loss /= GRAD_ACCUM_STEPS                                                # scale loss to mimic full total batch average
-            train_loss += loss.detach()         # keep as a tensor (for performing all_reduce)
-            
+            train_loss += loss.detach()         # accumulate as single-value tensor (only for logging after performing all_reduce)
+            # accumulate gradients:
             if DDP_WORLD_SIZE > 1:                                                  # could also use "contextlib.nullcontext()"
                 if micro_step == GRAD_ACCUM_STEPS - 1:
                     loss.backward()             # synchronise gradients across all GPUs in the final accumulation step
@@ -167,9 +156,6 @@ def train(
                         loss.backward()
             else:
                 loss.backward()                 # no synchronisation for a single GPU
-        # calculate and synchronise the average loss across all GPUs:
-        if DDP_WORLD_SIZE > 1:                                              
-            dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)    # all_reduce places the same final averaged result back on all GPUs
         # clip gradients to prevent exploding gradients and update model parameters:
         nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)          
         optimiser.step()                                                    
@@ -183,8 +169,8 @@ def train(
             scheduler.step()                    
             lr = scheduler.get_last_lr()[0] 
 
-        # ----- GET VALIDATION LOSS + HELLASWAG EVAL ----- #
-        # run validation every VAL_INTERVAL iterations OR in the final iteration of each epoch
+        # ----- GET VALIDATION LOSS + HELLASWAG EVALUATION ----- #
+        # run validation every VAL_INTERVAL iterations OR in the final iteration of each epoch:
         if (i % VAL_INTERVAL == 0) or (local_i == iters_per_epoch - 1): 
             model.eval()
             val_loss = 0
@@ -196,56 +182,59 @@ def train(
                         _, loss = model(X_val, y_val)
                     loss /= VAL_ACCUM_STEPS
                     val_loss += loss.detach()           
-            if DDP_WORLD_SIZE > 1:
-                dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)     # average and synchronise validation loss across all GPUs
-            if MASTER_PROCESS:
-                val_losses[i] = val_loss.item()                     # rank 0 stores the average validation loss from all_reduce()
-            # ----- HellaSwag EVALUATION ----- #
+            # run HellaSwag evaluation:
             n_correct, n_total = evaluate(model, DDP_WORLD_SIZE, DDP_LOCAL_RANK)    # evaluate on HellaSwag dataset
-            if DDP_WORLD_SIZE > 1:
-                n_correct = value_reduce(n_correct, DEVICE)         # sum and then synchronise correct counts across all GPUs
-                n_total = value_reduce(n_total, DEVICE)             # sum and then synchronise total counts across all GPUs
-            if MASTER_PROCESS:
-                score = n_correct / n_total * 100   # accuracy on HellaSwag dataset (%)
-                hellaswag_scores[i] = score         # store HellaSwag score
-            # ----- COMMAND LINE PRINT ----- #
-            if MASTER_PROCESS and verbose:
-                i_pct = (i + 1) / total_iterations * 100                            # percentage of total iterations
-                t = datetime.timedelta(seconds=int(pbar.format_dict["elapsed"]))    # total elapsed time
-                pbar.refresh()      # force update the progress bar
-                pbar.write(         # print to the command window
-                    f"\nepoch {epoch + 1}/{EPOCHS} | "
-                    f"i: {i + 1:,}/{total_iterations:,} ({i_pct:.1f}%) | "
-                    f"train_loss: {train_loss:.3f} | val_loss: {val_loss:.3f} | "
-                    f"HellaSwag: {score:.1f}% | elapsed: [{t}]\n"
-                )
 
-        # ----- LOG PROGRESS & STATS ----- #
-        if MASTER_PROCESS:
-            learning_rates[i] = lr                      
-            train_losses[i] = train_loss.item()
-            if i % LOG_INTERVAL == 0:
-                pbar.set_description_str(
-                    f"epoch: {epoch + 1}/{EPOCHS} | "
-                    f"t_loss: {train_loss.item():.3f} | "
-                    f"v_loss: {val_loss:.3f}"
-                )
-            # if at the end of an epoch, print to the command window with pbar.write()
-            if local_i == iters_per_epoch - 1:                  
-                pbar.refresh()
+        # ----- ALL-REDUCE - DDP COMMUNICATION (FOR LOGGING) ----- #
+        if DDP_WORLD_SIZE > 1:
+            # average and synchronise single-value loss tensors across all GPUs:
+            # (all_reduce places the same final averaged result back on all GPUs)
+            dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)   # only for logging (loss.backward() already built-in gradient synchronisation)
+            # only synchronise eval metrics on runs where validation is performed: 
+            if (i % VAL_INTERVAL == 0) or (local_i == iters_per_epoch - 1):                 
+                dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)     
+                # sum and then synchronise HellaSwag evaluation counts across all GPUs: 
+                # (using helper function due to non-tensor values)
+                n_correct = value_reduce(n_correct, DEVICE)         
+                n_total = value_reduce(n_total, DEVICE)
+
+        # ----- STORE AND LOG METRICS (FOR PRINTING & PLOTTING) ----- #
+        if MASTER_PROCESS:                          # only GPU rank 0 stores & prints
+            train_losses[i] = train_loss.item()     # store training loss
+            learning_rates[i] = lr                  # store learning rate
+            # if at the end of an epoch, print a new line message to the command window
+            if local_i == iters_per_epoch - 1:                                  # end of an epoch     
+                i_pct = (i + 1) / total_iterations * 100                        # percentage of total iterations so far
+                pbar.refresh()    # force update the progress bar
                 pbar.write(
-                    f"\n*--- epoch {epoch + 1}/{EPOCHS} complete | " 
-                    f"i: {i + 1:,}/{total_iterations:,} ({i_pct:.1f}%) ---*\n"
+                    f"\n*--- epoch {epoch + 1}/{EPOCHS} complete | "            # no. of epochs completed so far
+                    f"i: {i + 1:,}/{total_iterations:,} ({i_pct:.1f}%) ---*\n"  # iterations completed so far
                 )
+            # only store eval metrics on runs where validation is performed:
+            if (i % VAL_INTERVAL == 0) or (local_i == iters_per_epoch - 1):                                                   # if validation was performed
+                val_losses[i] = val_loss.item()                                         # store validation loss          
+                hellaswag_scores[i] = n_correct / n_total * 100                         # store HellaSwag accuracy score (in %)
+                # print stats to the command window on validation runs:
+                if verbose and not (local_i == iters_per_epoch - 1):                    # DON'T print on epoch end
+                    i_pct = (i + 1) / total_iterations * 100                            # percentage of total iterations so far
+                    t = datetime.timedelta(seconds=int(pbar.format_dict["elapsed"]))    # total elapsed time
+                    pbar.refresh()                                                      # force update the progress bar
+                    pbar.write(                                                         # print to the command window
+                        f"\nepoch {epoch + 1}/{EPOCHS} | "
+                        f"i: {i + 1:,}/{total_iterations:,} ({i_pct:.1f}%) | "
+                        f"train_loss: {train_losses[i]:.3f} | val_loss: {val_losses[i]:.3f} | "
+                        f"HellaSwag: {hellaswag_scores[i]:.1f}% | elapsed: [{t}]\n"
+                    )
 
     # ---------- TRAINING COMPLETE ---------- #
     if MASTER_PROCESS:
-        pbar.close()                        # close the tqdmGPT progress bar
-        print("\n\nTraining Complete.")     # print completion message
-    if DDP_WORLD_SIZE > 1:                  # if using DDP
-        destroy_process_group()             # clean up DDP process group
+        pbar.close()                                # close the tqdmGPT progress bar
+        print("\n\n*--- TRAINING COMPLETE ---*")    # print completion message
+    # if using DDP, clean up the process group:
+    if DDP_WORLD_SIZE > 1:                          
+        destroy_process_group()                     
 
-    return model, train_losses, val_losses, learning_rates
+    return model, train_losses, val_losses, hellaswag_scores, learning_rates
 
 
 def value_reduce(value: float, device: torch.device) -> float:
