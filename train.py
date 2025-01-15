@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import math
 import os
+import datetime
 from config import *    # import all global variables (all in caps)
 from dataset import TinyShakespeare, FineWebEdu
 from model import GPT2_124M, GPT2Config
@@ -39,7 +40,10 @@ def initialise_ddp() -> tuple:
     return ddp_rank, ddp_local_rank, ddp_world_size, device, master_process
 
 
-def train(compile: bool = True) -> tuple:
+def train(
+        compile: bool = True,
+        verbose: str = True
+    ) -> tuple:
     """
     Train a PyTorch model using gradient accumulation, mixed precision, and cosine decay learning rate scheduling.
     Selected hyperparameters are close to GPT-2 and GPT-3 model choices by OpenAI, released in any papers.
@@ -195,16 +199,27 @@ def train(compile: bool = True) -> tuple:
             if DDP_WORLD_SIZE > 1:
                 dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)     # average and synchronise validation loss across all GPUs
             if MASTER_PROCESS:
-                val_losses[i] = val_loss                            # rank 0 stores the average validation loss (calculated across all GPUs)
-            # ----- HellaSwag EVALUATION ----- #    # N.B. NEEDS UPDATING TO USE DDP
+                val_losses[i] = val_loss.item()                     # rank 0 stores the average validation loss from all_reduce()
+            # ----- HellaSwag EVALUATION ----- #
             n_correct, n_total = evaluate(model, DDP_WORLD_SIZE, DDP_LOCAL_RANK)    # evaluate on HellaSwag dataset
             if DDP_WORLD_SIZE > 1:
                 n_correct = value_reduce(n_correct, DEVICE)         # sum and then synchronise correct counts across all GPUs
                 n_total = value_reduce(n_total, DEVICE)             # sum and then synchronise total counts across all GPUs
             if MASTER_PROCESS:
-                score = n_correct / n_total * 100   # percentage accuracy on HellaSwag dataset
+                score = n_correct / n_total * 100   # accuracy on HellaSwag dataset (%)
                 hellaswag_scores[i] = score         # store HellaSwag score
-        
+            # ----- COMMAND LINE PRINT ----- #
+            if MASTER_PROCESS and verbose:
+                i_pct = (i + 1) / total_iterations * 100                            # percentage of total iterations
+                t = datetime.timedelta(seconds=int(pbar.format_dict["elapsed"]))    # total elapsed time
+                pbar.refresh()      # force update the progress bar
+                pbar.write(         # print to the command window
+                    f"\nepoch {epoch + 1}/{EPOCHS} | "
+                    f"i: {i + 1:,}/{total_iterations:,} ({i_pct:.1f}%) | "
+                    f"train_loss: {train_loss:.3f} | val_loss: {val_loss:.3f} | "
+                    f"HellaSwag: {score:.1f}% | elapsed: [{t}]\n"
+                )
+
         # ----- LOG PROGRESS & STATS ----- #
         if MASTER_PROCESS:
             learning_rates[i] = lr                      
@@ -212,12 +227,20 @@ def train(compile: bool = True) -> tuple:
             if i % LOG_INTERVAL == 0:
                 pbar.set_description_str(
                     f"epoch: {epoch + 1}/{EPOCHS} | "
-                    f"train_loss: {train_loss.item():.3f} | "
-                    f"val_loss: {val_loss:.3f}"
+                    f"t_loss: {train_loss.item():.3f} | "
+                    f"v_loss: {val_loss:.3f}"
+                )
+            # if at the end of an epoch, print to the command window with pbar.write()
+            if local_i == iters_per_epoch - 1:                  
+                pbar.refresh()
+                pbar.write(
+                    f"\n*--- epoch {epoch + 1}/{EPOCHS} complete | " 
+                    f"i: {i + 1:,}/{total_iterations:,} ({i_pct:.1f}%) ---*\n"
                 )
 
     # ---------- TRAINING COMPLETE ---------- #
     if MASTER_PROCESS:
+        pbar.close()                        # close the tqdmGPT progress bar
         print("\n\nTraining Complete.")     # print completion message
     if DDP_WORLD_SIZE > 1:                  # if using DDP
         destroy_process_group()             # clean up DDP process group
