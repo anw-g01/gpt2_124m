@@ -11,6 +11,7 @@ WEIGHT_DECAY        = 0.1           # applied on specific parameter groups (see 
 EPOCHS              = 1             # no. of cycles over the full dataset
 VAL_INTERVAL        = 250           # validation every 'interval' steps
 VAL_ACCUM_STEPS     = 3             # no. of validation mini-batches to run per GPU
+CHECKPOINT_INTERVAL = 10            # write model checkpoints every 'interval' validations
 
 # learning rate scheduler parameters:
 MAX_LEARNING_RATE   = 6e-4          # maximum learning rate
