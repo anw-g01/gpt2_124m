@@ -118,12 +118,16 @@ def train_gpt2(
         print(f"running {total_iterations:,} parallel iterations across {DDP_WORLD_SIZE} GPUs...\n")
         n_validations = total_iterations // VAL_INTERVAL        # no. of validation runs (roughly due to epoch-ends)
         print(f"\nrunning validation and HellaSwag eval every {VAL_INTERVAL} iterations (total ~{n_validations:,})\n")
+        n_checkpoints = n_validations // CHECKPOINT_INTERVAL    # no. of model checkpoints to write
+        print(f"writing model checkpoints every {CHECKPOINT_INTERVAL} validation steps (total ~{n_checkpoints:,}) \n")
         train_losses = np.zeros(total_iterations)               # store training losses (for plotting)
         val_losses = np.full(total_iterations, np.nan)          # initialise with NaNs due to interval storing
         hellaswag_scores = np.full(total_iterations, np.nan)    # store HellaSwag scores (interval storage)
         learning_rates = np.zeros(total_iterations)             # store learning rates (optional plotting)
         # create a log directory to store model checkpoints:
         os.makedirs(LOG_DIR, exist_ok=True)                     # create directory if it doesn't exist
+
+    import sys; sys.exit()
 
     # create a custom tqdm bar for printing/logging stats (see tqdm_bars.py):
     pbar = tqdmGPT(     
@@ -227,24 +231,28 @@ def train_gpt2(
                         f"HellaSwag: {hellaswag_scores[i]:.1f}% | elapsed: [{t}]\n"
                     )
                 # --- WRITE MODEL CHECKPOINT TO LOG_DIR --- #
-                raw_model = model.module if DDP_WORLD_SIZE > 1 else model       # access the "raw" unwrapped model if DDP
-                # create a sub-directory for each checkpoint inside LOG_DIR:
-                checkpoint_dir = os.path.join(LOG_DIR, f"checkpoint_epoch_{epoch + 1:02d}_iter_{i:05d}")
-                checkpoint_path = os.path.join(checkpoint_dir, f"model.pt")     # path to save PyTorch model weights
-                checkpoint = {                                                  # dictionary to store all metrics
-                    "epoch": epoch + 1, 
-                    "iteration": i,
-                    "model_state_dict": raw_model.state_dict(),
-                    "optimiser_state_dict": optimiser.state_dict(),
-                    "scheduler_state_dict": scheduler.state_dict(),
-                }
-                torch.save(checkpoint, checkpoint_path)                         # save model checkpoint
-                # save further metrics as numpy arrays:
-                for name, arr in [
-                    ('train_losses', train_losses), ('val_losses', val_losses),
-                    ('hellaswag_scores', hellaswag_scores), ('learning_rates', learning_rates)
-                ]:
-                    np.save(os.path.join(checkpoint_dir, f"{name}.npy"), arr)            # save numpy array to directory
+                # write a model checkpoint every CHECKPOINT_INTERVAL validations (NOT iterations) or end of epochs:
+                if (i % (VAL_INTERVAL * CHECKPOINT_INTERVAL) == 0) or (local_i == iters_per_epoch - 1):
+                    raw_model = model.module if DDP_WORLD_SIZE > 1 else model           # access the "raw" unwrapped model if DDP
+                    # create a sub-directory for each checkpoint inside LOG_DIR:
+                    format_str = f"epoch_{epoch + 1:02d}_iter_{i:05d}"                          # format string for checkpoint directory
+                    prefix = "end" if (local_i == iters_per_epoch - 1) else "val_checkpoint"    # "end" prefix for epoch end
+                    checkpoint_dir = os.path.join(LOG_DIR, f"{prefix}_{format_str}")    # create a new checkpoint directory
+                    checkpoint_path = os.path.join(checkpoint_dir, f"model.pt")         # path to save PyTorch model weights
+                    checkpoint = {                                                      # dictionary to store all metrics
+                        "epoch": epoch + 1, 
+                        "iteration": i,
+                        "model_state_dict": raw_model.state_dict(),
+                        "optimiser_state_dict": optimiser.state_dict(),
+                        "scheduler_state_dict": scheduler.state_dict(),
+                    }
+                    torch.save(checkpoint, checkpoint_path)                         # save model checkpoint
+                    # save further metrics as numpy arrays:
+                    for name, arr in [
+                        ('train_losses', train_losses), ('val_losses', val_losses),
+                        ('hellaswag_scores', hellaswag_scores), ('learning_rates', learning_rates)
+                    ]:
+                        np.save(os.path.join(checkpoint_dir, f"{name}.npy"), arr)   # save numpy array to directory
 
     # ---------- TRAINING COMPLETE ---------- #
     if MASTER_PROCESS:
