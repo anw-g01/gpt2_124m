@@ -252,12 +252,12 @@ def train_gpt2(
                 # --- WRITE MODEL CHECKPOINT TO LOG_DIR --- #
                 # write a model checkpoint every CHECKPOINT_INTERVAL validations (NOT iterations) or end of epochs:
                 if (i % (VAL_INTERVAL * CHECKPOINT_INTERVAL) == 0) or (local_i == iters_per_epoch - 1):
-                    raw_model = model.module if DDP_WORLD_SIZE > 1 else model           # access the "raw" unwrapped model if DDP
+                    raw_model = model.module if DDP_WORLD_SIZE > 1 else model                   # access the "raw" unwrapped model if DDP
                     # create a sub-directory for each checkpoint inside LOG_DIR:
-                    prefix = "end" if (local_i == iters_per_epoch - 1) else "val"       # "end" prefix for epoch end
-                    filename = get_checkpoint_filename(prefix, epoch + 1, i)            # get a standardised filename
-                    checkpoint_dir = os.path.join(LOG_DIR, filename)                    # create a new checkpoint directory
-                    checkpoint_path = os.path.join(checkpoint_dir, f"model.pt")         # path to save PyTorch model weights
+                    prefix = "end" if (local_i == iters_per_epoch - 1) else "val"               # "end" prefix for epoch end
+                    filename = get_checkpoint_filename(prefix, epoch + 1, i, DDP_WORLD_SIZE)    # get a standardised filename
+                    checkpoint_dir = os.path.join(LOG_DIR, filename)                            # create a new checkpoint directory
+                    checkpoint_path = os.path.join(checkpoint_dir, f"model.pt")                 # path to save PyTorch model weights
                     # dictionary to store all metrics:
                     checkpoint = {      
                         "epoch": epoch + 1, 
@@ -312,13 +312,9 @@ def cycle(iterable):
             iterator = iter(iterable)   # reset the iterator
 
 
-def get_checkpoint_filename(prefix: str, epoch: int, iteration: int) -> str:
-    """
-    Returns a standardised filename (`str) for saving model checkpoint files.
-    Edit the format string to change the naming convention consistently during
-    training, as well as for accessing files for graph plotting.
-    """
-    return f"{prefix}_checkpoint_epoch_{epoch:02d}_iter_{iteration:05d}"
+def get_checkpoint_filename(prefix: str, epoch: int, iteration: int, ddp_world_size: int) -> str:
+    """Returns a standardised filename string."""
+    return f"{prefix}_checkpoint_gpus_{ddp_world_size:02d}_epoch_{epoch:02d}_iter_{iteration:05d}"
 
 
 def load_fineweb(ddp_world_size: int, ddp_rank: int) -> tuple:
@@ -403,6 +399,7 @@ def load_shakespeare(ddp_world_size: int, ddp_rank: int) -> tuple:
 
 
 def display_graphs(
+        ddp_world_size: int,
         epoch_idx: int,
         iter_idx: int,
         log_dir: str = LOG_DIR,
@@ -432,7 +429,7 @@ def display_graphs(
     """
     assert checkpoint_type in ["end", "val"], "checkpoint_type must be 'end' or 'val'"
     # get the checkpoint directory from the filename (for the specified epoch and iteration):
-    filename = get_checkpoint_filename(checkpoint_type, epoch_idx, iter_idx)
+    filename = get_checkpoint_filename(checkpoint_type, epoch_idx, iter_idx, ddp_world_size)
     checkpoint_dir = os.path.join(log_dir, filename)
     assert os.path.exists(checkpoint_dir), f"checkpoint directory does not exist: {checkpoint_dir}"     # check if the directory exists
     # load numpy arrays from the checkpoint directory:
