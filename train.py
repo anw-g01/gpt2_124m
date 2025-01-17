@@ -79,7 +79,6 @@ def train_gpt2(
     torch.set_float32_matmul_precision("high")    # set global tensor dtype as TensorFloat32 
 
     # ---------- LOAD DATA ---------- # 
-
     # train_loader, val_loader = load_shakespeare(DDP_WORLD_SIZE, DDP_LOCAL_RANK)     # tiny/big shakespeare dataset
     train_loader, val_loader = load_fineweb(DDP_WORLD_SIZE, DDP_LOCAL_RANK)         # load training and validation data
     train_iter, val_iter = cycle(train_loader), cycle(val_loader)                   # create infinite iterators
@@ -87,31 +86,32 @@ def train_gpt2(
     if MASTER_PROCESS:    # only GPU rank 0 prints to the command window
         print("\n*-------------- TRAINING --------------*")
         print(f"effective batch: {TOKENS_PER_BATCH:,} tokens")
-        tok_per_gpu = BATCH_SIZE * BLOCK_SIZE    # tokens processed per GPU per mini-batch
-        GRAD_ACCUM_STEPS = int(TOKENS_PER_BATCH // (tok_per_gpu * DDP_WORLD_SIZE))  
-        print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}] ({GRAD_ACCUM_STEPS} acc. steps per GPU)")
-        total_batches = len(train_loader) * DDP_WORLD_SIZE    # total mini-batches in ONE EPOCH for all GPUs
-        # calculate no. of complete batches (called chunks) per epoch for all GPUs:
-        chunks_per_epoch_train = int(math.ceil(total_batches / (GRAD_ACCUM_STEPS * DDP_WORLD_SIZE)))    
-        chunks_per_gpu = int(math.ceil(chunks_per_epoch_train / DDP_WORLD_SIZE))
-        print(f"DataLoader batches: {total_batches:,} ({len(train_loader):,} per GPU)")
-        print(f"=> {chunks_per_epoch_train:,} chunks/epoch ({chunks_per_gpu:,} per GPU)")
+        tok_per_gpu = BATCH_SIZE * BLOCK_SIZE    # training tokens processed per GPU per mini-batch
+        grad_accum_steps = int(TOKENS_PER_BATCH // (tok_per_gpu * DDP_WORLD_SIZE))      
+        print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}]")
+        total_train_mini_batches = len(train_loader) * DDP_WORLD_SIZE    # total mini-batches in ONE EPOCH overall
+        print(f"no. of mini-batches: {total_train_mini_batches:,} ({len(train_loader):,} per GPU)")
+        # calculate no. of COMPLETE training batches (not mini-batches):
+        # using floor because remaining mini-batches wouldn't complete a full batch:
+        print(f"using {grad_accum_steps} accumulation step(s) per GPU")
+        train_batches_per_epoch = int(math.floor(total_train_mini_batches / (grad_accum_steps * DDP_WORLD_SIZE)))    
+        print(f"=> {train_batches_per_epoch:,} batches/epoch per GPU")     
 
         print("\n*-------------- VALIDATION --------------*")
+        print(f"using {VAL_ACCUM_STEPS} accumulation steps per GPU ")
+        print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}]")
         val_effective_batch = BATCH_SIZE * BLOCK_SIZE * VAL_ACCUM_STEPS * DDP_WORLD_SIZE
-        print(f"effective batch: {val_effective_batch:,} tokens")
-        print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}] (with {VAL_ACCUM_STEPS} acc. steps per GPU)")
-        total_val_batches = len(val_loader) * DDP_WORLD_SIZE
-        chunks_per_epoch_val = int(math.ceil(total_val_batches / (VAL_ACCUM_STEPS * DDP_WORLD_SIZE)))
-        val_chunks_per_gpu = int(math.ceil(chunks_per_epoch_val / DDP_WORLD_SIZE))
-        print(f"DataLoader batches: {total_val_batches:,} ({len(val_loader):,} per GPU)")
-        print(f"=> {chunks_per_epoch_val:,} chunks/epoch ({val_chunks_per_gpu:,} per GPU)")
+        print(f"=> effective batch: {val_effective_batch:,} tokens")
+        total_val_mini_batches = len(val_loader) * DDP_WORLD_SIZE
+        print(f"no. of mini-batches: {total_val_mini_batches:,} ({len(val_loader):,} per GPU)")
+        val_batches_per_epoch = int(math.floor(total_val_mini_batches / (VAL_ACCUM_STEPS * DDP_WORLD_SIZE)))
+        print(f"=> {val_batches_per_epoch:,} batches/epoch per GPU")
 
     # ---------- MODEL INSTANCE ---------- #
         print(f"\nloading model, optimiser and scheduler...\n")
 
-    iters_per_epoch = len(train_loader)             # no. of available mini-batches in one epoch (per GPU)    
-    total_iterations = iters_per_epoch * EPOCHS     # total no. of iterations across full training (per GPU)
+    iters_per_epoch = train_batches_per_epoch       # no. of iterations per epoch (per GPU) - equivalent to no. of training batches
+    total_iterations = iters_per_epoch * EPOCHS     # total no. of complete training batches to process for full training (per GPU)
 
     model = GPT2_124M(GPT2Config(vocab_size=50304)).to(DEVICE)      # increase vocab size to (2^7 * 3 * 131)
     optimiser = model.configure_optim(WEIGHT_DECAY, MAX_LEARNING_RATE, DEVICE.type)
@@ -128,17 +128,18 @@ def train_gpt2(
     # raw_model = model.module if DDP_WORLD_SIZE > 1 else model       # to access the "raw" unwrapped model
 
     if MASTER_PROCESS:
-        print(f"\ncompiling model...")
+        if compile:
+            print(f"compiling model...")
         print(f"no. of model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
 
     # ---------- MAIN TRAINING LOOP ---------- # 
 
-        print(f"\ntraining for {EPOCHS} epochs ({iters_per_epoch:,} iterations per epoch per GPU)")
-        print(f"running {total_iterations:,} parallel iterations across {DDP_WORLD_SIZE} GPUs...\n")
+        print(f"\ntraining for {EPOCHS} epoch(s) ({train_batches_per_epoch:,} iterations/epoch per GPU)")
+        print(f"total: {total_iterations:,} iterations/GPU (in parallel across {DDP_WORLD_SIZE} GPU(s))")
         n_validations = total_iterations // VAL_INTERVAL        # no. of validation runs (roughly due to epoch-ends)
-        print(f"\nrunning validation and HellaSwag eval every {VAL_INTERVAL} iterations (total ~{n_validations:,})\n")
+        print(f"running validation and HellaSwag eval every {VAL_INTERVAL} iterations (total ~{n_validations:,})")
         n_checkpoints = n_validations // CHECKPOINT_INTERVAL    # no. of model checkpoints to write
-        print(f"writing model checkpoints every {CHECKPOINT_INTERVAL} validation steps (total ~{n_checkpoints:,}) \n")
+        print(f"writing model checkpoints every {CHECKPOINT_INTERVAL} validation runs (total ~{n_checkpoints:,}) \n")
         # pre-allocate arrays to store training metrics for plotting:
         train_losses = np.zeros(total_iterations)               # store training losses (for plotting)
         val_losses = np.full(total_iterations, np.nan)          # initialise with NaNs due to interval storing
@@ -151,7 +152,7 @@ def train_gpt2(
     pbar = tqdmGPT(     
         iterable=range(total_iterations),
         n_tokens=(BATCH_SIZE * BLOCK_SIZE),     # custom input: training tokens processed in input batch
-        acc_steps=GRAD_ACCUM_STEPS,             # custom input: gradient accumulation steps
+        acc_steps=grad_accum_steps,             # custom input: no. of gradient accumulation steps
         disable=(DDP_LOCAL_RANK != 0),          # show progress bar for only the first GPU process (DDP)
     )
 
@@ -164,16 +165,16 @@ def train_gpt2(
         model.train()
         optimiser.zero_grad()                                                       # reset gradients
         train_loss = 0                                                              # accumulated train loss
-        for micro_step in range(GRAD_ACCUM_STEPS):
+        for micro_step in range(grad_accum_steps):
             X, y = next(train_iter)                                                 # get next training mini-batch
             X_train, y_train = X.to(DEVICE), y.to(DEVICE)                           # move to GPU
             with torch.autocast(device_type=DEVICE.type, dtype=torch.bfloat16):     # mixed precision (use bfloat16)
                 _, loss = model(X_train, y_train)
-            loss /= GRAD_ACCUM_STEPS                                                # scale loss to mimic full total batch average
+            loss /= grad_accum_steps                                                # scale loss to mimic full total batch average
             train_loss += loss.detach()         # accumulate as single-value tensor (only for logging after performing all_reduce)
             # accumulate gradients:
             if DDP_WORLD_SIZE > 1:                                                  # could also use "contextlib.nullcontext()"
-                if micro_step == GRAD_ACCUM_STEPS - 1:
+                if micro_step == grad_accum_steps - 1:
                     loss.backward()             # synchronise gradients across all GPUs in the final accumulation step
                 else:
                     with model.no_sync():       # context manager: accumulate gradients without synchronisation 
