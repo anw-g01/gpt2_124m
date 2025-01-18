@@ -15,6 +15,22 @@ class HellaSwag(Dataset):
     """
     A PyTorch `torch.utils.data.Dataset` class for loading and processing the HellaSwag dataset.
 
+    With the `DistributedSampler`, if `ddp_world_size > 1` and `drop_last=True` the sampler
+    will "drop the tail of the data to make it evenly divisible across the number of replicas"
+    (PyTorch documentation). This will unfortunately remove `len(data_loader) % ddp_world_size`
+    samples for each GPU process (if not perfectly divisible). In comparison, if `drop_last=False`
+    the sampler will "add extra indices to make the data evenly divisible across the replicas" 
+    (PyTorch documentation). As a result, `drop_last=True` is chosen prevent running duplicate 
+    samples; the final accuracy score will only be negligibly affected.
+    
+    Example data partioning calculation with HellaSwag `'val'` dataset:
+    - `10,042` examples split across `8` GPUs
+    - with `drop_last=True`, `DistributedSampler` will create `1,255` examples per GPU
+    - `1255 * 8` = `10,040` examples (`2` remainders are dropped)
+    - `2 / 10,042` = `0.02%` of the total dataset is not processed (negligible).
+    - if `drop_last=False`, `DistributedSampler` will create `1,256` examples per GPU
+    - `1256 * 8` = `10,048` examples (`6` remainders are re-added)
+
     Args:
     --
         `split` (`str`): the dataset split to load. Options are `"train"`, `"val"`, and `"test"`. Default is `"val"`.
@@ -96,13 +112,17 @@ class HellaSwag(Dataset):
         return file_path
     
     def _load(self) -> list:
+        """
+        Helper function: loads the dataset examples of a 
+        given split into a list from the downloaded file.
+        """
         file_path = self._download()
         with open(file_path, "r") as file:
             examples = [json.loads(line) for line in file]
         return examples        
 
 
-def evaluate(
+def hs_eval(
         data_loader: DataLoader,
         model: Optional[GPT2_124M] = None,  
         device: str = "cuda",
@@ -214,7 +234,7 @@ def eval1() -> None:
     )
 
     # evaluate GPT-2 (124M) on HellaSwag:
-    correct, total = evaluate(hs_loader, verbose=True)     
+    correct, total = hs_eval(hs_loader, verbose=True)     
     
     # display results:
     score = correct / total * 100
@@ -232,7 +252,7 @@ def eval2() -> None:
     Example final score output: `correct: 2,555/10,042 (25.4%)`
     """
 
-    correct, total = evaluate(
+    correct, total = hs_eval(
         data_loader=DataLoader(
             dataset=HellaSwag("val"),
             batch_size=None,    # examples must not be batched
