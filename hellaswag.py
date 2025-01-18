@@ -1,6 +1,6 @@
 import torch
-from torch import nn
 from torch.nn import functional as F
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
 from transformers import GPT2LMHeadModel
 import tiktoken
 import requests
@@ -11,100 +11,138 @@ from model import GPT2_124M, GPT2Config
 from typing import Optional, Tuple
 
 
-DATA_CACHE_DIR = os.path.join(os.path.dirname(__file__), 'hellaswag_dataset')
-DATASETS = {
-    "train": ["https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_train.jsonl", 39_905],
-    "val": ["https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_val.jsonl", 10_042],
-    "test": ["https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_test.jsonl", 10_003],
-}
-ENC = tiktoken.get_encoding("gpt2")     # GPT2 tokenizer for encoding
-
-
-def _get_file(url: str, filename: str, chunk_size=1024):
-    """Download a file from a given `url` and save it to a specified `filename`."""
-    with requests.get(url, stream=True) as response:
-        total = int(response.headers.get("content-length", 0))
-        with open(filename, "wb") as file:                      # "write binary"
-            for chunk in response.iter_content(chunk_size):     # iterate over chunks of data
-                file.write(chunk)                               # write file (optional: can return the no. of bytes written to file)
-
-
-def _download(split: str):
-    """Download the HellaSwag dataset for a given `split` and save it  to `DATA_CACHE_DIR`."""
-    os.makedirs(DATA_CACHE_DIR, exist_ok=True)                              # create cache directory if it doesn't exist already
-    url = DATASETS[split][0]                                                # get URL for the specified split
-    filename = os.path.join(DATA_CACHE_DIR, f"hellaswag_{split}.jsonl")     # create filename for the split
-    if not os.path.exists(filename):                                        # if file doesn't exist
-        print(f"\ndownloading to {filename}...\n")
-        _get_file(url, filename)                                             # download the file into the directory path
-
-
-def iterate_examples(split: str):
-    """Iterate over examples in the HellaSwag dataset for a given `split`."""
-    _download(split)                                        
-    filename = os.path.join(DATA_CACHE_DIR, f"hellaswag_{split}.jsonl")     
-    with open(filename, "r") as file:                       
-        for line in file:               # each line is an example
-            yield json.loads(line)      # yield the example as a JSON object (dictionary)
-
-
-def render(example: dict) -> tuple:
+class HellaSwag(Dataset):
     """
-    Render a given `example` dictionary into a suitable format for evaluation.
+    A PyTorch `torch.utils.data.Dataset` class for loading and processing the HellaSwag dataset.
+
+    Args:
+    --
+        `split` (`str`): the dataset split to load. Options are `"train"`, `"val"`, and `"test"`. Default is `"val"`.
     
-    Returns:
-    - `tokens`: `torch.tensor` of shape `(4, N)` with concatenated context and ending tokens for each of the four candidates 
-    -  `mask`: `torch.tensor` of shape `(4, N)` populated with `1`'s for ending tokens and `0`'s for context tokens
-    - `label`: `int` (`0`, `1`, `2`, or `3`) representing the index of the correct ending candidate
+    Attributes:
+    --
+        `links` (`dict`): URLs for downloading the dataset splits.
+        `split` (`str`): the dataset split to load.
+        `dir` (`str`): cache directory to store the downloaded dataset files.
+        `enc` (`tiktoken.Encoding`): a `GPT-2` tokenizer for encoding text.
+        `examples` (`list`): list of examples loaded from the dataset file.
+    
+    Methods:
+    --
+        `__len__()`: returns the number of examples in the dataset.
+        `__getitem__()`: returns the tokenized context and ending sequences, mask, and label for a given index.
+        `_download()`: downloads the dataset file from the specified URL and saves it to a local directory.
+        `_load()`: loads the dataset examples into a list from the downloaded file.
     """
-    label = example["label"]                        # correct ending label (0, 1, 2, or 3)
-    context_tokens = ENC.encode(example["ctx"])     # tokenize context (event description)
+
+    def __init__(self, split: str = "val"):
+        self.links = {
+            "train": "https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_train.jsonl",
+            "val": "https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_val.jsonl",
+            "test": "https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_test.jsonl",
+        }
+        self.split = split
+        self.dir = os.path.join(os.path.dirname(__file__), 'hellaswag_dataset')
+        self.enc = tiktoken.get_encoding("gpt2")    
+        # download and load the dataset split:
+        self.examples = self._load()
+
+    def __len__(self):
+        return len(self.examples) 
+
+    def __getitem__(self, idx: int):
+
+        example = self.examples[idx]
+        label = example["label"]
+        context_tokens = self.enc.encode(example["ctx"])
+
+        token_rows, mask_rows = [], []
+        # iterate over the 4 possible ending sequences:
+        for ending in example["endings"]:
+            ending_tokens = self.enc.encode(" " + ending)            # tokenize the ending tokens
+            tok_row = context_tokens + ending_tokens    # concatenate with context tokens
+            # create a mask row to 
+            mask_row = [0] * len(context_tokens) + [1] * len(ending_tokens)
+            # append to the list of token and mask rows:
+            token_rows.append(tok_row)
+            mask_rows.append(mask_row)
+        
+        # pre-allocate padded PyTorch tensors:
+        max_len = max(len(row) for row in token_rows)
+        tokens = torch.zeros(size=(4, max_len), dtype=torch.long)
+        mask = torch.zeros(size=(4, max_len), dtype=torch.long)
+        # fill the tensors with the token and mask rows:
+        for i, (tok_row, mask_row) in enumerate(zip(token_rows, mask_rows)):
+            tokens[i, :len(tok_row)] = torch.tensor(tok_row)
+            mask[i, :len(mask_row)] = torch.tensor(mask_row)
+
+        return tokens, mask, label
+
+    def _download(self, chunk_size=1024) -> None:
+        """
+        Helper function: downloads a dataset file from a 
+        specified URL and saves it to a local directory.
+        """
+        os.makedirs(self.dir, exist_ok=True)                # create cache directory to store the datasets
+        url = self.links[self.split]                        # get URL for the specified split
+        file_name = f"hellaswag_{self.split}.jsonl"     
+        file_path = os.path.join(self.dir, file_name)       # path to save the file
+        if not os.path.exists(file_path):                   # download if file doesn't exist
+            print(f"downloading {file_name}...")
+            with requests.get(url, stream=True) as response:
+                with open(file_path, "wb") as file:                     # "write binary"
+                    for chunk in response.iter_content(chunk_size):     # iterate over chunks of data
+                        file.write(chunk)                               # write file (optional: can return the no. of bytes written to file)
+        return file_path
     
-    # populate [tokens + endings] and a [mask] for each candidate:
-    token_rows, mask_rows = [], []                                      # arrays to populate each token and mask rows
-    for ending in example["endings"]:                                   # for each ending candidate (four in total)
-        ending_tokens = ENC.encode(" " + ending)                        # encode each ending - prepend space (" ") due to GPT-2 tokenizer
-        t_row = context_tokens + ending_tokens                          # concatenate context and ending tokens
-        token_rows.append(context_tokens + ending_tokens)               # populate as a given row
-        m_row = [0] * len(context_tokens) + [1] * len(ending_tokens)    # create mask for ending tokens
-        mask_rows.append(m_row)                                         # populate as a given row
-
-    # create PyTorch tensors for tokens and mask:
-    max_len = max(len(row) for row in token_rows)                       # find length of the longest row (from four options)
-    tokens = torch.zeros(size=(4, max_len), dtype=torch.long)           # create tensor for tokens
-    mask = torch.zeros(size=tokens.shape, dtype=torch.long)             # create tensor for masks (same shape)
-    for i, (t_row, m_row) in enumerate(zip(token_rows, mask_rows)):     # populate tokens and masks
-        tokens[i, :len(t_row)] = torch.tensor(t_row)                    # populate token tensor
-        mask[i, :len(m_row)] = torch.tensor(m_row)                      # populate mask tensor
-
-    return tokens, mask, label
+    def _load(self) -> list:
+        file_path = self._download()
+        with open(file_path, "r") as file:
+            examples = [json.loads(line) for line in file]
+        return examples        
 
 
-@torch.no_grad()
 def evaluate(
-        model: Optional[GPT2_124M] = None,   # uses HuggingFace GPT2LMHeadModel() if None
-        ddp_world_size: int = 1,
-        ddp_local_rank: int = 0,
-        model_type: str = "gpt2",
-        split: str = "val",
-        compile: bool = False,
+        data_loader: DataLoader,
+        model: Optional[GPT2_124M] = None,  
+        device: str = "cuda",
         verbose: bool = False,
-        device: str = "cuda"
+        model_type: str = "gpt2",
+        compile: bool = False
     ) -> Tuple[int, int]:
     """
-    Evaluate a specified `GPT2_124M` model on the HellaSwag dataset for a given `split`.
-    If no `model` is specified (`model=None`), the function will use a pretrained `GPT-2` model
-    from HuggingFace. Choose the model size with `model_type`; default is set to `"gpt2"` which
-    is the 124M parameter size of GPT-2.
+    Evaluate a specified `GPT2_124M` model on a HellaSwag dataset. If no `model` is specified, 
+    the function will use a pretrained `GPT-2` model from HuggingFace.
 
-    The function loads examples iteratively and calculates the average cross entropy loss of
-    the model's predictions for each set of ending candidates. The candidate with
-    the lowest loss is chosen as the predicted ending. A tally of correct predictions
-    against ground truth labels is kept and returned at the end of evaluation.
+    The function iterates through examples in a PyTorch `DataLoader` which must contain a 
+    `HellaSwag` `Dataset` object. The `DataLoader` MUST be set with `batch_size=None` as 
+    each example is inherently a batch of `4` candidate ending tokens.
+
+    For each example, the function renders the context and 
+    ending candidates and calculates the average cross entropy loss of the model's predictions 
+    for each set of ending candidates. The candidate with the lowest loss is chosen as the 
+    predicted ending. A tally of correct predictions against ground truth labels is kept and 
+    returned at the end of evaluation.
+
+    Args:
+    --
+        `data_loader` (`DataLoader`): a PyTorch data loader containing a specific split of the HellaSwag dataset.
+        `model` (`Optional[GPT2_124M]`): the `GPT2_124M` model to evaluate. If `None`, a pretrained `GPT-2 model` from HuggingFace will be used.
+        `device` (`str`): the device to run the evaluation on. Default is `"cuda"`.
+        `verbose` (`bool`): if `True`, progress will be logged. Default is `False`.
+        `model_type` (`str`): the type of `GPT-2` model to use if no `model` is specified. 
+        e.g. use `"gpt2-xl"` for the `1.5B` parameter `GPT-2` model; default is `"gpt2"` (`124M`).
+        `compile` (`bool`): if True, the model will be compiled with `torch.compile`. Default is `False`.
+    
+    Returns:
+    --
+    `tuple`: a tuple containing:
+        `correct` (`int`): number of correct predictions
+        `total` (`int`): number of examples processed.
     """
     torch.set_float32_matmul_precision('high') # use tf32
 
-    using_model = False     # flag for getting logits
+    using_model = False     # to flag method for getting logits
     if model is None:       # use HuggingFace model if None
         model = GPT2LMHeadModel.from_pretrained(model_type).to(device)
         print(f"using HuggingFace model: {model_type}...\n")
@@ -114,30 +152,20 @@ def evaluate(
     model.eval()    # set model to evaluation mode
 
     pbar = tqdmHS(
-        iterable=iterate_examples(split),
-        total=DATASETS[split][1],               # length of examples (39,905 for "train")
+        iterable=data_loader,
         desc=f"correct: 0/0",
-        disable=(not verbose and ddp_world_size != 1)   # progress bar only for single processes
+        disable=(not verbose)   
     )
 
     total, correct = 0, 0
-    for i, example in enumerate(pbar):
-
-        # a GPU rank will process every ddp_world_size'th example, where
-        # each example is processed by exactly one GPU with no overlaps:
-        if i % ddp_world_size != ddp_local_rank:     
-            continue
-
-        tokens, mask, label = render(example)
+    for i, (tokens, mask, label) in enumerate(pbar):
         T, M = tokens.to(device), mask.to(device)
-
         # get all logits from forward pass
-        with torch.no_grad():
-            with torch.autocast(device_type=device, dtype=torch.bfloat16):
-                if using_model:
-                    logits, _ = model(T)                # get logits from GPT_124M() (see from model.py)
-                else:
-                    logits = model(T).logits             # logits from HuggingFace model
+        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+            if using_model:
+                logits, _ = model(T)            # get logits from GPT_124M() (see from model.py)
+            else:
+                logits = model(T).logits        # logits from HuggingFace model
         
         P = logits[:, :-1, :].contiguous()      # remove last prediction (nothing to predict after ending)
         T = T[:, 1:].contiguous()               # remove first token (no previous token to predict it)
@@ -149,17 +177,17 @@ def evaluate(
             reduction="none"                    # retain individual losses
         )                                       # --> [N,]
         L = L.view(T.shape[0], -1)              # reshape back to [batch_size * seq_len]
-
         L *= M                                  # apply mask element-wise (zero all context token positions)
 
         avg_L = L.sum(dim=1) / M.sum(dim=1)     # average along each sample candidate
         y_pred = avg_L.argmin().item()          # lower loss => more confident
 
-        # accumulate stats
+        # accumulate stats:
         total += 1
         correct += int(y_pred == label)
 
-        if verbose and (i % 5 == 0 or i == DATASETS[split][1] - 1):            # progress logging if verbose=True
+        # progress logging if verbose=True:
+        if verbose and (i % 5 == 0 or i == len(data_loader) - 1):            
             correct_pct = correct / (i + 1) * 100
             progress_str = (
                 f"correct: {correct:,}/{i + 1:,} ({correct_pct:.1f}%)"
@@ -172,17 +200,21 @@ def evaluate(
 def eval1() -> None:
     """
     Pre-trained HuggingFace Model Example:
-    ---
+    --
     Evaluate using a pretrained `GPT-2` (124M) model when `model=None` on the HellaSwag `"val"` dataset:
-    N.B. use `model_type="gpt2-xl"` for the `1.5B` parameter `GPT-2` model; default is `"gpt2"`.
     
     `[===============] 10,042/10,042 (100.0%) | correct: 2,968/10,042 (29.6%) [01:34<00:00, ? examples/s]`
 
     Example final score output: `correct: 2,968/10,042 (29.6%)`
-    N.B. Progress bar is disabled for multi-GPU evaluation due to shared examples.
     """
+    hs_loader = DataLoader(
+        dataset=HellaSwag("val"),
+        batch_size=None,    # examples must not be batched
+        shuffle=False,      # no reason to shuffle for eval
+    )
 
-    correct, total = evaluate(verbose=True)     # evaluate GPT-2 (124M) on HellaSwag
+    # evaluate GPT-2 (124M) on HellaSwag:
+    correct, total = evaluate(hs_loader, verbose=True)     
     
     # display results:
     score = correct / total * 100
@@ -194,17 +226,22 @@ def eval2() -> None:
     Specified `GPT2_124M` model evaluation example:
     ---
     This example uses an un-trained newly instantiated `GPT2_124M()` model.
-    Its accuracy should be ~25% (1/4) as a a result of randomly initialised
+    Its accuracy should be `~25%` (`1/4`) as a result of randomly initialised
     weights, i.e. model "guessing". 
     
-    Example final score output: 2,555/10,042 (25.4%)
-    N.B. Progress bar is disabled for multi-GPU evaluation due to shared examples.
+    Example final score output: `correct: 2,555/10,042 (25.4%)`
     """
-    
+
     correct, total = evaluate(
-        model=GPT2_124M(GPT2Config()),     
-        verbose=True,
-    )
+        data_loader=DataLoader(
+            dataset=HellaSwag("val"),
+            batch_size=None,    # examples must not be batched
+            shuffle=False,      # no reason to shuffle for eval
+        ), 
+        model=GPT2_124M(GPT2Config()),
+        verbose=True, 
+        device="cpu"
+    )     
     
     # display results:
     score = correct / total * 100
