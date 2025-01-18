@@ -121,7 +121,7 @@ class HellaSwag(Dataset):
             examples = [json.loads(line) for line in file]
         return examples        
 
-
+@torch.no_grad()
 def hs_eval(
         data_loader: DataLoader,
         model: Optional[GPT2_124M] = None,  
@@ -168,6 +168,7 @@ def hs_eval(
         print(f"using HuggingFace model: {model_type}...\n")
     else:
         using_model = True
+        model.to(device)
     model = torch.compile(model) if compile else model
     model.eval()    # set model to evaluation mode
 
@@ -223,9 +224,9 @@ def eval1() -> None:
     --
     Evaluate using a pretrained `GPT-2` (124M) model when `model=None` on the HellaSwag `"val"` dataset:
     
-    `[===============] 10,042/10,042 (100.0%) | correct: 2,968/10,042 (29.6%) [01:34<00:00, ? examples/s]`
+    `[===============] 10,042/10,042 (100.0%) | correct: 2,969/10,042 (29.6%) [01:56<00:00, ? examples/s]`
 
-    Example final score output: `correct: 2,968/10,042 (29.6%)`
+    Example final score output: `correct: 2,969/10,042 (29.6%)`
     """
     hs_loader = DataLoader(
         dataset=HellaSwag("val"),
@@ -238,7 +239,7 @@ def eval1() -> None:
     
     # display results:
     score = correct / total * 100
-    print(f"total correct: {correct:,}/{total:,} ({score:.1f}%)")
+    print(f"\ntotal correct: {correct:,}/{total:,} ({score:.1f}%)")
 
 
 def eval2() -> None:
@@ -257,15 +258,14 @@ def eval2() -> None:
             dataset=HellaSwag("val"),
             batch_size=None,    # examples must not be batched
             shuffle=False,      # no reason to shuffle for eval
-        ), 
+        ),
         model=GPT2_124M(GPT2Config()),
         verbose=True, 
-        device="cpu"
     )     
     
     # display results:
     score = correct / total * 100
-    print(f"total correct: {correct:,}/{total:,} ({score:.1f}%)")
+    print(f"\ntotal correct: {correct:,}/{total:,} ({score:.1f}%)")
 
 
 if __name__ == "__main__":
