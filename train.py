@@ -481,13 +481,14 @@ def _load_hellaswag(ddp_world_size: int, ddp_rank: int, split: str = "val") -> D
 
 def display_graphs(
         ddp_world_size: int,
-        epoch_idx: int,
-        iter_idx: int,
+        epoch_num: int,
+        iter_num: int,
+        truncate: bool = True,
         log_dir: str = LOG_DIR,
         checkpoint_type: str = "end",
         plot_lr: bool = True,
         save: bool = True,
-        format: str = "png"
+        img_format: str = "png"
     ) -> None:
     """
     Plot training results given a model checkpoint directory.
@@ -500,8 +501,8 @@ def display_graphs(
 
     Parameters:
     --
-        `epoch_idx` (`int`): epoch index (starting from `1`) for the checkpoint.
-        `iter_idx` (`int`): iteration (starting from `1`) index for the checkpoint.
+        `epoch_num` (`int`): epoch number (starting from `1`) for the checkpoint.
+        `iter_num` (`int`): iteration number (starting from `1`) for the checkpoint.
         `log_dir` (`str`): directory where the logs and checkpoints are stored.
         `checkpoint_type` (`str`): prefix of the checkpoint file name (must be `"end"` or `"val"`).
         `plot_lr` (`bool`): whether to plot the learning rate on the same plot as the losses.
@@ -510,7 +511,7 @@ def display_graphs(
     """
     assert checkpoint_type in ["end", "val"], "checkpoint_type must be 'end' or 'val'"
     # get the checkpoint directory from the filename (for the specified epoch and iteration):
-    filename = _get_checkpoint_filename(checkpoint_type, epoch_idx, iter_idx, ddp_world_size)
+    filename = _get_checkpoint_filename(checkpoint_type, epoch_num, iter_num, ddp_world_size)
     checkpoint_dir = os.path.join(log_dir, filename)
     assert os.path.exists(checkpoint_dir), f"checkpoint directory does not exist: {checkpoint_dir}"     # check if the directory exists
     # load numpy arrays from the checkpoint directory:
@@ -518,7 +519,12 @@ def display_graphs(
     val_losses = np.load(os.path.join(checkpoint_dir, "val_losses.npy"))
     hellaswag_scores = np.load(os.path.join(checkpoint_dir, "hellaswag_scores.npy"))
     learning_rates = np.load(os.path.join(checkpoint_dir, "learning_rates.npy"))        
-    
+    # truncate arrays up to iter_idx (default):
+    if truncate:
+        train_losses = train_losses[:iter_num]
+        val_losses = val_losses[:iter_num]
+        hellaswag_scores = hellaswag_scores[:iter_num]
+        learning_rates = learning_rates[:iter_num]
     # ----- MAIN FIGURE ----- #
     fig, axs = plt.subplots(nrows=1, ncols=2)
     fig.suptitle(f"GPT2 Training Results: {filename}")  # title for the entire figure
@@ -577,6 +583,6 @@ def display_graphs(
         plt.savefig(
             f"figure_{filename}", 
             dpi=300, bbox_inches="tight",
-            format=format
+            format=img_format
         )
     plt.show()
