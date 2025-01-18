@@ -17,22 +17,22 @@ from config import *    # import global variables from config.py (all in capital
 from datasets import TinyShakespeare, FineWebEdu
 from model import GPT2_124M, GPT2Config
 from tqdm_bars import tqdmGPT
-from hellaswag import evaluate
+from hellaswag import HellaSwag, hs_eval 
 
 
-def initialise_ddp() -> tuple:
+def _initialise_ddp() -> tuple:
     """
     Set up DDP (Distributed Data Parallel) with `torch.distributed` to utilise multi-GPU training.
     The `torchrun` command will set the `env` variables: `RANK`, `LOCAL_RANK` and `WORLD_SIZE`.
 
     Returns:
     --
-    A `tuple` containing:
-    - `ddp_rank` (`int`): global process integer ID (e.g. `0-7` for `8` GPUs).
-    - `ddp_local_rank` (`int`): GPU ID on the current node (e.g. `0-7` if all on one machine).
-    - `ddp_world_size` (`int`): total number of processes (i.e. number of GPUs).
-    - `device` (`torch.device`): device to be used for the current process.
-    - `master_process` (`bool`): flag indicating if the current process is the master process (first GPU).
+    `tuple`: a tuple containing:
+        `ddp_rank` (`int`): global process integer ID (e.g. `0-7` for `8` GPUs).
+        `ddp_local_rank` (`int`): GPU ID on the current node (e.g. `0-7` if all on one machine).
+        `ddp_world_size` (`int`): total number of processes (i.e. number of GPUs).
+        `device` (`torch.device`): device to be used for the current process.
+        `master_process` (`bool`): flag indicating if the current process is the master process (first GPU).
     """
     # check if running in a distributed environment (e.g. using torchrun):
     using_ddp = all(key in os.environ for key in ["RANK", "LOCAL_RANK", "WORLD_SIZE"])    
@@ -61,17 +61,19 @@ def train_gpt2(
     """
     Parameters:
     --
-    - `compile` (`bool`): whether to compile the model using `torch.compile()`. Default is `False`.
-    - `verbose` (`str`): whether to print logs & metrics to the command line every `CHECKPOINT_INTVERAL` steps. Default is `True`.
-    This is in addition to the custom `tqdmGPT` progress bar which will always be displayed during training by default. 
+        `compile` (`bool`): whether to compile the model using `torch.compile()`. Default is `False`.
+        `verbose` (`str`): whether to print validation logs & metrics to the command line every
+        `CHECKPOINT_INTVERAL` steps. Default is `True`. This does not have any effect on the custom 
+        `tqdmGPT` progress bar which will always be displayed during training by default. Print logs 
+        will also always occur to signify the end of an epoch by default.
     
     Returns:
     --
-    - `model` (`torch.nn.Module`): The trained model with updated weights, specificly `GPT2_124M(GPT2Config(vocab_size=50304))`. 
+        `model` (`torch.nn.Module`): The trained model with updated weights, specificly `GPT2_124M(GPT2Config(vocab_size=50304))`. 
     """
 
     # get distributed parameters from environment variables (if using DDP)
-    DDP_RANK, DDP_LOCAL_RANK, DDP_WORLD_SIZE, DEVICE, MASTER_PROCESS = initialise_ddp()
+    DDP_RANK, DDP_LOCAL_RANK, DDP_WORLD_SIZE, DEVICE, MASTER_PROCESS = _initialise_ddp()
 
     torch.manual_seed(2001)    # for consistent intantiations of models across all processes
     if torch.cuda.is_available():
@@ -79,10 +81,10 @@ def train_gpt2(
     torch.set_float32_matmul_precision("high")    # set global tensor dtype as TensorFloat32 
 
     # ---------- LOAD DATA ---------- # 
-    # train_loader, val_loader = load_shakespeare(DDP_WORLD_SIZE, DDP_LOCAL_RANK)     # tiny/big shakespeare dataset
-    train_loader, val_loader = load_fineweb(DDP_WORLD_SIZE, DDP_LOCAL_RANK)         # load training and validation data
-    train_iter, val_iter = cycle(train_loader), cycle(val_loader)                   # create infinite iterators
-    
+    train_loader, val_loader = _load_fineweb(DDP_WORLD_SIZE, DDP_LOCAL_RANK)        # load training and validation data
+    train_iter, val_iter = _cycle(train_loader), _cycle(val_loader)                 # create infinite iterators
+    hs_loader = _load_hellaswag(DDP_WORLD_SIZE, DDP_RANK)                           # load HellaSwag 'val' dataloader
+
     if MASTER_PROCESS:    # only GPU rank 0 prints to the command window
         print("\n*-------------- TRAINING --------------*")
         print(f"effective batch: {TOKENS_PER_BATCH:,} tokens")
@@ -207,7 +209,7 @@ def train_gpt2(
                     loss /= VAL_ACCUM_STEPS
                     val_loss += loss.detach()           
             # run HellaSwag evaluation:
-            n_correct, n_total = evaluate(model, DDP_WORLD_SIZE, DDP_LOCAL_RANK)    # evaluate on HellaSwag dataset
+            n_correct, n_total = hs_eval(hs_loader, model, DEVICE.type)    # evaluate on HellaSwag dataset
 
         # ----- ALL-REDUCE - DDP COMMUNICATION (FOR LOGGING) ----- #
         if DDP_WORLD_SIZE > 1:      # only if using DDP
@@ -219,8 +221,8 @@ def train_gpt2(
                 dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)     
                 # sum and then synchronise HellaSwag evaluation counts across all GPUs: 
                 # (using helper function due to non-tensor values)
-                n_correct = value_reduce(n_correct, DEVICE)         
-                n_total = value_reduce(n_total, DEVICE)
+                n_correct = _value_reduce(n_correct, DEVICE)         
+                n_total = _value_reduce(n_total, DEVICE)
 
         # ----- STORE AND LOG METRICS (FOR PRINTING & PLOTTING) ----- #
         if MASTER_PROCESS:                          # only GPU rank 0 stores & prints
@@ -231,23 +233,23 @@ def train_gpt2(
                 i_pct = (i + 1) / total_iterations * 100                        # percentage of total iterations so far
                 pbar.refresh()    # force update the progress bar
                 pbar.write(
-                    f"\n*--- epoch {epoch + 1}/{EPOCHS} complete | "            # no. of epochs completed so far
-                    f"i: {i + 1:,}/{total_iterations:,} ({i_pct:.1f}%) ---*\n"  # iterations completed so far
+                    f"\n*----- EPOCH {epoch + 1}/{EPOCHS} COMPLETE | "            # no. of epochs completed so far
+                    f"i: {i + 1:5,}/{total_iterations:,} ({i_pct:4.1f}%) -----*\n"  # iterations completed so far
                 )
             # only store eval metrics on runs where validation is performed:
-            if (i % VAL_INTERVAL == 0) or (local_i == iters_per_epoch - 1):                                                   # if validation was performed
+            if (i % VAL_INTERVAL == 0) or (local_i == iters_per_epoch - 1):             # if validation was performed
                 val_losses[i] = val_loss.item()                                         # store validation loss          
                 hellaswag_scores[i] = n_correct / n_total * 100                         # store HellaSwag accuracy score (in %)
-                # print stats to the command window on validation runs:
+                # print stats to the command window on validation runs (but not if it's a the end of an epoch):
                 if verbose and not (local_i == iters_per_epoch - 1):                    # DON'T print on epoch end
                     i_pct = (i + 1) / total_iterations * 100                            # percentage of total iterations so far
                     t = datetime.timedelta(seconds=int(pbar.format_dict["elapsed"]))    # total elapsed time
                     pbar.refresh()                                                      # force update the progress bar
                     pbar.write(                                                         # print to the command window
-                        f"\nepoch {epoch + 1}/{EPOCHS} | "
-                        f"i: {i + 1:,}/{total_iterations:,} ({i_pct:.1f}%) | "
-                        f"train_loss: {train_losses[i]:.3f} | val_loss: {val_losses[i]:.3f} | "
-                        f"HellaSwag: {hellaswag_scores[i]:.1f}% | elapsed: [{t}]\n"
+                        f"epoch {epoch + 1}/{EPOCHS} | "
+                        f"i: {i + 1:5,}/{total_iterations:,} ({i_pct:4.1f}%) | "
+                        f"train_loss: {train_losses[i]:6.3f} | val_loss: {val_losses[i]:6.3f} | "
+                        f"HellaSwag: {hellaswag_scores[i]:.1f}% | [{t}]"
                     )
                 # --- WRITE MODEL CHECKPOINT TO LOG_DIR --- #
                 # write a model checkpoint every CHECKPOINT_INTERVAL validations (NOT iterations) or end of epochs:
@@ -255,7 +257,7 @@ def train_gpt2(
                     raw_model = model.module if DDP_WORLD_SIZE > 1 else model                   # access the "raw" unwrapped model if DDP
                     # create a sub-directory for each checkpoint inside LOG_DIR:
                     prefix = "end" if (local_i == iters_per_epoch - 1) else "val"               # "end" prefix for epoch end
-                    filename = get_checkpoint_filename(prefix, epoch + 1, i, DDP_WORLD_SIZE)    # get a standardised filename
+                    filename = _get_checkpoint_filename(prefix, epoch + 1, i, DDP_WORLD_SIZE)    # get a standardised filename
                     checkpoint_dir = os.path.join(LOG_DIR, filename)                            # create a new checkpoint directory
                     checkpoint_path = os.path.join(checkpoint_dir, f"model.pt")                 # path to save PyTorch model weights
                     # dictionary to store all metrics:
@@ -263,8 +265,8 @@ def train_gpt2(
                         "epoch": epoch + 1, 
                         "iteration": i,
                         "model_state_dict": raw_model.state_dict(),
-                        # "optimiser_state_dict": optimiser.state_dict(),
-                        # "scheduler_state_dict": scheduler.state_dict(),
+                        "optimiser_state_dict": optimiser.state_dict(),
+                        "scheduler_state_dict": scheduler.state_dict(),
                     }
                     torch.save(checkpoint, checkpoint_path)     # save model checkpoint
                     # save further metrics as numpy arrays:
@@ -276,8 +278,14 @@ def train_gpt2(
 
     # ---------- TRAINING COMPLETE ---------- #
     if MASTER_PROCESS:
+        print("\n*----- TRAINING COMPLETE -----*")  # print completion message
+        # additional stats:
+        t = datetime.timedelta(seconds=int(pbar.format_dict["elapsed"]))    # total elapsed time
+        print(f"\ntotal elapsed time: {t}")
+        avg_iter_per_sec = total_iterations / t.total_seconds()
+        print(f"{avg_iter_per_sec:.1f} batches/s processed ({1/avg_iter_per_sec:.2f} s/batch)")
         pbar.close()                                # close the tqdmGPT progress bar
-        print("\n\n*--- TRAINING COMPLETE ---*")    # print completion message
+        
     # if using DDP, clean up the process group:
     if DDP_WORLD_SIZE > 1:                          
         destroy_process_group()                     
@@ -285,7 +293,7 @@ def train_gpt2(
     return model
 
 
-def value_reduce(value: float, device: torch.device) -> float:
+def _value_reduce(value: float, device: torch.device) -> float:
     """
     Helper function to reduce a single value across all GPU processes.
     Used for summing HellaSwag `n_correct` and `n_total` counts across all GPUs.
@@ -299,7 +307,7 @@ def value_reduce(value: float, device: torch.device) -> float:
     return tensor.item()
 
 
-def cycle(iterable):
+def _cycle(iterable):
     """
     Infinitely cycles over an iterable object (e.g. a `DataLoader`) using a generator.
     Used over `itertools.cycle()` to prevent memory leaks for large datasets like `FineWebEdu()`.
@@ -312,19 +320,20 @@ def cycle(iterable):
             iterator = iter(iterable)   # reset the iterator
 
 
-def get_checkpoint_filename(prefix: str, epoch: int, iteration: int, ddp_world_size: int) -> str:
+def _get_checkpoint_filename(prefix: str, epoch: int, iteration: int, ddp_world_size: int) -> str:
     """Returns a standardised filename string."""
     return f"{prefix}_checkpoint_gpus_{ddp_world_size:02d}_epoch_{epoch:02d}_iter_{iteration:05d}"
 
 
-def load_fineweb(ddp_world_size: int, ddp_rank: int) -> tuple:
+def _load_fineweb(ddp_world_size: int = 1, ddp_rank: int = 0) -> tuple:
     """
     Loads training and validation `DataLoader` (PyTorch) objects for the `FineWebEdu()` dataset.
 
-    For DDP, a `DistributedSampler` splits all available `global_idx` indicies (defined in `__len__`)
-    amongst GPU processes which independently handles its batch of shard loading and processing. 
+    Supports DDP training with a `DistributedSampler` that splits all available `global_idx` indicies 
+    (defined in `__len__`) amongst GPU processes which independently handles its batch of shard loading 
+    and processing. 
 
-    All shuffling must be set to False to prevent constant shard loading. Utilising `self.cache()` to
+    All shuffling must be set to `False` to prevent constant shard loading. Utilising `self.cache()` to
     store the current shard being processed improves continuous iteration until the next shard.
     The validation set only occurs over one shard file, hence only a single shard has to be loaded once
     and so shuffling can occur without major overheads.
@@ -360,10 +369,11 @@ def load_fineweb(ddp_world_size: int, ddp_rank: int) -> tuple:
     return train_loader, val_loader
 
 
-def load_shakespeare(ddp_world_size: int, ddp_rank: int) -> tuple:
+def _load_shakespeare(ddp_world_size: int = 1, ddp_rank: int = 0) -> tuple:
     """
     Loads training and validation `DataLoader` (PyTorch) objects for the `TinyShakespeare()` dataset.
-    For DDP, training data is split into equal-sized chunks across all GPUs (processes) using `DistributedSampler`.
+    Supports DDP training with a `DistributedSampler` that splits all available data indicies 
+    (defined in `__len__()`) amongst GPU processes.
     """
     print(f"\nloading data...\n")
     train_dataset = TinyShakespeare(BLOCK_SIZE, pct=PCT_DATA, train_split=TRAIN_SPLIT) # load custom Dataset class for training
@@ -398,6 +408,77 @@ def load_shakespeare(ddp_world_size: int, ddp_rank: int) -> tuple:
     return train_loader, val_loader 
 
 
+def _load_hellaswag(ddp_world_size: int, ddp_rank: int, split: str = "val") -> DataLoader:
+    """
+    Returns a HellaSwag `DataLoader` to iterate over for evaluation.
+
+    The `DataLoader` MUST be set with `batch_size=None` as 
+    each example is inherently a batch of `4` candidate ending tokens.
+
+    With the `DistributedSampler`, if `ddp_world_size > 1` and `drop_last=True` the sampler
+    will "drop the tail of the data to make it evenly divisible across the number of replicas"
+    (PyTorch documentation). This will unfortunately remove `len(data_loader) % ddp_world_size`
+    samples for each GPU process (if not perfectly divisible). In comparison, if `drop_last=False`
+    the sampler will "add extra indices to make the data evenly divisible across the replicas" 
+    (PyTorch documentation). As a result, `drop_last=True` is chosen prevent running duplicate 
+    samples; the final accuracy score will only be negligibly affected.
+    
+    Example calculation with HellaSwag `'val'` dataset:
+    - `10,042` examples split across `8` GPUs
+    - with `drop_last=True`, `DistributedSampler` will create `1,255` examples per GPU
+    - `1255 * 8` = `10,040` examples (`2` remainders are dropped)
+    - `2 / 10,042` = `0.02%` of the total dataset is not processed (negligible).
+    - if `drop_last=False`, `DistributedSampler` will create `1,256` examples per GPU
+    - `1256 * 8` = `10,048` examples (`6` remainders are re-added)
+
+    Example with code:
+    ```
+    # example usage of `load_hellaswag()` with DDP:
+    ddp_world_size = 8
+    split = "val"
+    hs_loader = HellaSwag(split=split)      # without DDP
+    print(f"total examples in '{split}' set: {len(hs_loader):,}")
+    # using DistributedSampler with DDP:
+    print(f"using DistributedSampler with {8} GPUs:")
+    print(f"each GPU gets a DataLoader with the following examples:")
+    total = 0
+    for ddp_rank in range(ddp_world_size):
+        hs_loader = load_hellaswag(ddp_world_size, ddp_rank, split)     # with DDP
+        total += len(hs_loader)
+        print(f"rank {ddp_rank}: {len(hs_loader):,}")
+    print(f"total examples across all GPUs: {total:,}")
+
+    >>> total examples in 'val' set: 10,042
+    >>> using DistributedSampler with 8 GPUs:
+    >>> each GPU gets a DataLoader with the following examples:
+    >>> rank 0: 1,255
+    >>> rank 1: 1,255
+    >>> rank 2: 1,255
+    >>> rank 3: 1,255
+    >>> rank 4: 1,255
+    >>> rank 5: 1,255
+    >>> rank 6: 1,255
+    >>> rank 7: 1,255
+    >>> total examples across all GPUs: 10,040
+    ```
+    """
+    hs_dataset = HellaSwag(split=split)
+    hs_sampler = DistributedSampler(
+        hs_dataset,
+        num_replicas=ddp_world_size,
+        rank=ddp_rank,
+        shuffle=False,      # no need to shuffle for evaluation
+        drop_last=True      # drop remainders with DDP, ensure non-duplicated results
+    )
+    hs_loader = DataLoader(
+        hs_dataset,
+        batch_size=None,    # must be set to None
+        sampler=hs_sampler,
+        pin_memory=True 
+    )
+    return hs_loader
+
+
 def display_graphs(
         ddp_world_size: int,
         epoch_idx: int,
@@ -419,17 +500,17 @@ def display_graphs(
 
     Parameters:
     --
-    - `epoch_idx` (`int`): epoch index (starting from `1`) for the checkpoint.
-    - `iter_idx` (`int`): iteration (starting from `1`) index for the checkpoint.
-    - `log_dir` (`str`): directory where the logs and checkpoints are stored.
-    - `checkpoint_type` (`str`): prefix of the checkpoint file name (must be `"end"` or `"val"`).
-    - `plot_lr` (`bool`): whether to plot the learning rate on the same plot as the losses.
-    - `save` (`bool`): whether to save the plot as an image file.
-    - `format` (`str`): format to save the plot image (e.g., `"png"`, `"jpg"`).    
+        `epoch_idx` (`int`): epoch index (starting from `1`) for the checkpoint.
+        `iter_idx` (`int`): iteration (starting from `1`) index for the checkpoint.
+        `log_dir` (`str`): directory where the logs and checkpoints are stored.
+        `checkpoint_type` (`str`): prefix of the checkpoint file name (must be `"end"` or `"val"`).
+        `plot_lr` (`bool`): whether to plot the learning rate on the same plot as the losses.
+        `save` (`bool`): whether to save the plot as an image file.
+        `format` (`str`): format to save the plot image (e.g., `"png"`, `"jpg"`).    
     """
     assert checkpoint_type in ["end", "val"], "checkpoint_type must be 'end' or 'val'"
     # get the checkpoint directory from the filename (for the specified epoch and iteration):
-    filename = get_checkpoint_filename(checkpoint_type, epoch_idx, iter_idx, ddp_world_size)
+    filename = _get_checkpoint_filename(checkpoint_type, epoch_idx, iter_idx, ddp_world_size)
     checkpoint_dir = os.path.join(log_dir, filename)
     assert os.path.exists(checkpoint_dir), f"checkpoint directory does not exist: {checkpoint_dir}"     # check if the directory exists
     # load numpy arrays from the checkpoint directory:
