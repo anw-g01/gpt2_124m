@@ -45,7 +45,7 @@ class FineWebEdu(Dataset):
                 n = len(shards) * SHARD_SIZE * 1e-9
             else:
                 n = ((len(shards) - 1) * SHARD_SIZE + LAST_SHARD_SIZE) * 1e-9
-            print(f'found {len(shards):,} shard(s) for "{split}" split -> ({n:.2f} B tokens)')
+            print(f'found {len(shards):,} shard(s) for "{split}" split ({n:.2f} B tokens)')
         return shards   # return list of full paths to shards
 
     def _load_shard(self, shard_idx: int):
