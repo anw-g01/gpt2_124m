@@ -99,7 +99,7 @@ def train_gpt2(
         train_batches_per_epoch = int(math.floor(total_train_mini_batches / (grad_accum_steps * DDP_WORLD_SIZE)))    
         print(f"=> {train_batches_per_epoch:,} batches/epoch per GPU")     
 
-        print("\n*-------------- VALIDATION --------------*")
+        print("\n*------------- VALIDATION -------------*")
         print(f"using {VAL_ACCUM_STEPS} accumulation steps per GPU ")
         print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}]")
         val_effective_batch = BATCH_SIZE * BLOCK_SIZE * VAL_ACCUM_STEPS * DDP_WORLD_SIZE
@@ -108,6 +108,12 @@ def train_gpt2(
         print(f"no. of mini-batches: {total_val_mini_batches:,} ({len(val_loader):,} per GPU)")
         val_batches_per_epoch = int(math.floor(total_val_mini_batches / (VAL_ACCUM_STEPS * DDP_WORLD_SIZE)))
         print(f"=> {val_batches_per_epoch:,} batches/epoch per GPU")
+
+        print("\n*----------- HELLASWAG EVAL -----------*")
+        hs_examples = len(hs_loader) * DDP_WORLD_SIZE
+        print(f'total examples in "val" set: {hs_examples:,}')
+        print(f"using DistributedSampler with {DDP_WORLD_SIZE} GPU(s)")
+        print(f"=> {len(hs_loader):,} unique examples per GPU")
 
     # ---------- MODEL INSTANCE ---------- #
         print(f"\nloading model, optimiser and scheduler...\n")
