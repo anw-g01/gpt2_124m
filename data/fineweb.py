@@ -1,10 +1,10 @@
 import torch
 from torch.utils.data import Dataset, DataLoader, DistributedSampler
-import tiktoken
 import numpy as np
 import os
-from config import DATA_ROOT
-from load_fineweb import SHARD_SIZE, LAST_SHARD_SIZE   
+from ..config import DATA_ROOT
+from ..train import _cycle   
+from load_fineweb import SHARD_SIZE, LAST_SHARD_SIZE
 
 
 class FineWebEdu(Dataset):
@@ -20,8 +20,8 @@ class FineWebEdu(Dataset):
     Returns the number of available batches in one epoch for a given `split`.
     Only the first shard with `100M` tokens (`SHARD_SIZE`) is used for the validation set.
     The training set uses the remaining `99` shards. 
-    NOTE: The first `98` shards of the training set hold `100M` tokens each,
-    while the last shard holds exactly `82,590,278` tokens.
+    N.B. The first `98` shards of the training set hold `100M` tokens each,
+    while the last shard holds exactly `82,590,278` (LAST_SHARD_SIZE) tokens.
     """
 
     def __init__(self, batch_size: int, block_size: int, split="train", dir=DATA_ROOT, verbose=True):
@@ -116,19 +116,6 @@ class FineWebEdu(Dataset):
         return ((len(self.shards) - 1) * SHARD_SIZE + LAST_SHARD_SIZE) // chunk_size     
 
 
-def cycle(iterable):
-    """
-    Infinitely cycles over an iterable object (e.g. a `DataLoader`) using a generator.
-    Used in replacement to `itertools.cycle()` to prevent memory leaks for large datasets like `FineWebEdu()`.
-    See: https://github.com/pytorch/pytorch/issues/23900
-    """
-    iterator = iter(iterable)
-    while True:                         
-        try:    
-            yield next(iterator)        # yield the next item in the iterator
-        except StopIteration:           # iterator reaches the end
-            iterator = iter(iterable)   # reset the iterator 
-
 if __name__ == "__main__":
 
     batch_size = 64             # samples per forward pass
@@ -157,7 +144,7 @@ if __name__ == "__main__":
     print(f"\ntokens per mini-batch: {batch_size * block_size:,} (mini-batch size {batch_size:,})")
     print(f"{len(train_loader):,} available mini-batches per epoch (per GPU)\n")    # per GPU if using DDP
     
-    train_iter = cycle(train_loader)
+    train_iter = _cycle(train_loader)
 
     # example traversal through one epoch of the DataLoader
     n = len(train_loader) * 2
