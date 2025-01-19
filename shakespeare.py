@@ -62,11 +62,16 @@ if __name__ == "__main__":
     # ----- DataLoader examples with TinyShakespeare ----- #
 
     chunk_sampling = False      # batch processing method
+    batch_size = 16             # batch size
+    block_size = 1024           # context (sequence) length
+    # simulate DDP:
+    ddp_world_size = 8          # no. of GPU processes
+    ddp_local_rank = 0          # run as the first GPU only
 
     if chunk_sampling:
         print(f"\nutilising chunk sampling (non-overlapping batches)")
         train_loader = DataLoader(
-            TinyShakespeare(block_size=1024, batch_size=16),
+            TinyShakespeare(block_size, batch_size),
             batch_size=None,    # must be set to None
             shuffle=False,
         )
@@ -85,11 +90,8 @@ if __name__ == "__main__":
 
     # --- Usage with DistributedSampler:
 
-    print(f"\nusing DistributedSampler with DataLoader..")
-    train_dataset = TinyShakespeare(        # load custom Dataset class for training
-        block_size=block_size,
-        verbose=False
-    )
+    print(f"\nusing DistributedSampler with DataLoader...")
+    train_dataset = TinyShakespeare(block_size, verbose=False)
     train_sampler = DistributedSampler(     # for DDP: divides the dataset into equal-sized chunks across all GPUs (processes)
         train_dataset,
         num_replicas=8,                     # total no. of processes (using 8 GPUs as an example)
@@ -107,4 +109,4 @@ if __name__ == "__main__":
         shuffle=True,                       
     )
     print("\navailable batches per epoch: ", end="")
-    print(f"{len(train_loader):,} (without) | {len(train_loader_wDS):,} (with)")
+    print(f"{len(train_loader_wDS):,} (with) | {len(train_loader):,} (without)")
