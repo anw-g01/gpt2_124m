@@ -7,7 +7,7 @@ from typing import Optional
 
 class Shakespeare(Dataset):
     """
-    PyTorch `Dataset` class for loading two different Shakespeare datasets from text files:
+    A custom PyTorch `torch.utils.data.Dataset` class for loading two different Shakespeare datasets from text files:
     - `"tiny"`: `shakespeare_1.1M_chars.txt` (`~300k` GTP-2 tokens)
     - `"large"`: `shakespeare_5.4M_chars.txt` (`~1.6M` GTP-2 tokens)
     
@@ -26,19 +26,19 @@ class Shakespeare(Dataset):
 
     Args:
     --
-        `block_size` (`int`): context (sequence) length.
-        `size` (`str`): while text file to load, either `"tiny"` or `"large"`.
-        `batch_size` (`Optional[int]`): batch size for chunk sampling, otherwise use built-in PyTorch `DataLoader` batching.
-        `split_type` (`str`): which type of data split to load, either `"train"` or `"val"`. Default is `"train"`.
-        `train_split` (`float`): ratio of training data split. Default is `0.9`.
-        `pct` (`float`): percentage of the full dataset to use. Default is `1.0`.
-        `verbose` (`bool`): whether to print dataset information. Default is `False`.
+        `block_size` (`int`): Context (sequence) length.
+        `size` (`str`): While text file to load, either `"tiny"` or `"large"`.
+        `batch_size` (`Optional[int]`): Batch size for chunk sampling, otherwise use built-in PyTorch `DataLoader` batching.
+        `split_type` (`str`): Which type of data split to load, either `"train"` or `"val"`. Default is `"train"`.
+        `train_split` (`float`): Ratio of training data split. Default is `0.9`.
+        `pct` (`float`): Percentage of the full dataset to use. Default is `1.0`.
+        `verbose` (`bool`): Whether to print dataset information. Default is `False`.
 
     Methods:
     --
-        `__len__`: returns the number of samples in the dataset.
-        `__getitem__`: returns batched input and target sequences if `batch_size` is specified, for the given index.
-        `_tokenize()`: tokenizes the Shakespeare dataset based on the specified size, percentage, and split type.
+        `__len__()`: Returns the number of samples in the dataset.
+        `__getitem__(idx: int)`: Returns batched input and target sequences if `batch_size` is specified, for the given index.
+        `_tokenize()`: Tokenizes the Shakespeare dataset based on the specified size, percentage, and split type.
     """
 
     def __init__(
@@ -70,7 +70,7 @@ class Shakespeare(Dataset):
             return self.tokens.shape[0] - self.block_size   # sliding window (overlapping samples)
         return (self.tokens.shape[0] - self.block_size) // (self.block_size * self.batch_size)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int):
         if self.batch_size is None:
             X = self.tokens[idx: idx + self.block_size]
             y = self.tokens[idx + 1: idx + self.block_size + 1]

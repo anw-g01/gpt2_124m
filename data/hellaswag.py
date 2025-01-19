@@ -13,7 +13,7 @@ from ..model import GPT2_124M, GPT2Config
 
 class HellaSwag(Dataset):
     """
-    A PyTorch `torch.utils.data.Dataset` class for loading and processing the HellaSwag dataset.
+    A custom PyTorch `torch.utils.data.Dataset` class for loading and processing the HellaSwag dataset.
 
     With the `DistributedSampler`, if `ddp_world_size > 1` and `drop_last=True` the sampler
     will "drop the tail of the data to make it evenly divisible across the number of replicas"
@@ -38,17 +38,17 @@ class HellaSwag(Dataset):
     Attributes:
     --
         `links` (`dict`): URLs for downloading the dataset splits.
-        `split` (`str`): the dataset split to load.
-        `dir` (`str`): cache directory to store the downloaded dataset files.
-        `enc` (`tiktoken.Encoding`): a `GPT-2` tokenizer for encoding text.
-        `examples` (`list`): list of examples loaded from the dataset file.
+        `split` (`str`): The dataset split to load.
+        `dir` (`str`): Cache directory to store the downloaded dataset files.
+        `enc` (`tiktoken.Encoding`): A `GPT-2` tokenizer for encoding text.
+        `examples` (`list`): List of examples loaded from the dataset file.
     
     Methods:
     --
-        `__len__()`: returns the number of examples in the dataset.
-        `__getitem__()`: returns the tokenized context and ending sequences, mask, and label for a given index.
-        `_download()`: downloads the dataset file from the specified URL and saves it to a local directory.
-        `_load()`: loads the dataset examples into a list from the downloaded file.
+        `__len__()`: Returns the number of examples in the dataset.
+        `__getitem__(idx: int)`: Returns the tokenized context and ending sequences, mask, and label for a given index.
+        `_download()`: Downloads the dataset file from the specified URL and saves it to a local directory.
+        `_load()`: Loads the dataset examples into a list from the downloaded file.
     """
 
     def __init__(self, split: str = "val"):
