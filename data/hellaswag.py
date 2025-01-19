@@ -1,14 +1,14 @@
 import torch
 from torch.nn import functional as F
-from torch.utils.data import Dataset, DataLoader, DistributedSampler
+from torch.utils.data import Dataset, DataLoader
 from transformers import GPT2LMHeadModel
 import tiktoken
 import requests
 import json
 from tqdm_bars import tqdmHS
 import os
-from model import GPT2_124M, GPT2Config
 from typing import Optional, Tuple
+from ..model import GPT2_124M, GPT2Config
 
 
 class HellaSwag(Dataset):
@@ -120,6 +120,7 @@ class HellaSwag(Dataset):
         with open(file_path, "r") as file:
             examples = [json.loads(line) for line in file]
         return examples        
+
 
 @torch.no_grad()
 def hs_eval(
