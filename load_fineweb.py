@@ -1,9 +1,3 @@
-"""
-https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu
-Process the FineWeb-Edu Sample-10BT dataset by tokenzing documents and saving them in fixed-size shards.
-Each shard is saved as a NumPy array with 100M tokens (available space), of data type `uint16`.
-"""
-
 import numpy as np
 import tiktoken
 import os
@@ -11,21 +5,19 @@ import multiprocessing as mp
 import datasets
 from tqdm_bars import tqdmFW
 
-# ------ GLOBAL VARIABLES ------ #
 
 LOCAL_DIR       = "fineweb-edu-10BT"                # directory to store data shards
 DATASET_NAME    = "HuggingFaceFW/fineweb-edu"       # HuggingFace dataset name
 REMOTE_NAME     = "sample-10BT"                     # specific subset
 SHARD_SIZE      = int(1e8)                          # 100M tokens/shard except last shard (100 total shards)
-TOTAL_TOKENS    = int(9.9e9)                             # 9.9B total tokens used from sample-10BT subset
+TOTAL_TOKENS    = 9_982_590_278                     # 9.9B total tokens used from sample-10BT subset
 DATA_CACHE_DIR  = os.path.join(os.path.dirname(__file__), LOCAL_DIR)    # construct a full path to the local data cache directory
 ENCODER         = tiktoken.get_encoding("gpt2")                         # initialise GPT-2 tokenizer 
 EOT             = ENCODER._special_tokens["<|endoftext|>"]              # end-of-text (EOT) token 
 LAST_SHARD_SIZE = 82_590_278                        # no. of tokens in the last shard from downloading FineWeb-Edu (sample-10BT)
 
-# ------ HELPER FUNCTIONS ------ #
 
-def tokenize(row: dict) -> np.array:
+def _tokenize(row: dict) -> np.array:
     """
     Tokenizes the text (key) from a single document (row from dataset) and returns a NumPy array of `uint16` tokens.
     """
@@ -37,13 +29,13 @@ def tokenize(row: dict) -> np.array:
     return tokens.astype(np.uint16)
 
 
-def write_datafile(tokens: np.array, shard_idx: int) -> None:
+def _write_datafile(tokens: np.array, shard_idx: int) -> None:
     split = "val" if shard_idx == 0 else "train"    # make the first shard the validation set
     filename = os.path.join(DATA_CACHE_DIR, f"fineweb-edu_{split}_{shard_idx:06d}")     # create filename
     np.save(filename, tokens)
 
 
-def calc_shard_num(dataset: datasets.Dataset) -> tuple:
+def _calc_shard_num(dataset: datasets.Dataset) -> tuple:
     """Calculates the number of shards required to store the dataset."""
     print(f"\ntotal no. of rows in dataset: {len(dataset):,}")          # no. of rows in the dataset (also see HuggingFace dataset page)
     total_shards = int(np.ceil(TOTAL_TOKENS / SHARD_SIZE))
@@ -63,7 +55,7 @@ def main() -> None:
 
     os.makedirs(DATA_CACHE_DIR, exist_ok=True)          # create directory to store shards if it doesn't exist
     fw = datasets.load_dataset(DATASET_NAME, name=REMOTE_NAME, split="train")
-    total_shards = calc_shard_num(fw)    # calculate the no. of shards that will be created
+    total_shards = _calc_shard_num(fw)    # calculate the no. of shards that will be created
 
     # --- MAIN PROCESS --- #
 
@@ -79,7 +71,7 @@ def main() -> None:
         tok_proc = 0            # total no. of ALL tokens processed
 
         pbar = tqdmFW(
-            iterable=pool.imap(func=tokenize, iterable=fw, chunksize=32),   # iterate through each document, tokenizing each one in parallel
+            iterable=pool.imap(func=_tokenize, iterable=fw, chunksize=32),   # iterate through each document, tokenizing each one in parallel
             desc=f"processing shard {shard_idx + 1}/{total_shards} | ",
             total=TOTAL_TOKENS,                                             # visualise progress of total tokens processed
         )
@@ -94,7 +86,7 @@ def main() -> None:
                 # add tokens to any remaining leftover space
                 remaining = SHARD_SIZE - shard_tokens                                   # calculate how many more tokens can fit
                 arr[shard_tokens: shard_tokens + remaining] = tokens[:remaining]        # fill remaining space
-                write_datafile(arr, shard_idx)                                          # write full shard to disk
+                _write_datafile(arr, shard_idx)                                          # write full shard to disk
                 shard_idx += 1                                                          # move to next shard
                 pbar.set_description_str(f"processing shard {shard_idx + 1}/{total_shards} | ")
                 # start by populating the next shard with the leftovers of the current document (carry tokens over) 
@@ -103,7 +95,8 @@ def main() -> None:
 
         # write any further remaining tokens as the last shard
         if shard_tokens != 0:
-            write_datafile(arr[:shard_tokens], shard_idx)      # last shard holds 82,590,278 tokens (NOT 100M)
+            _write_datafile(arr[:shard_tokens], shard_idx)      # last shard holds 82,590,278 tokens (NOT 100M)
+
 
 if __name__ == "__main__":
     main()
