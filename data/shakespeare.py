@@ -24,7 +24,7 @@ class Shakespeare(Dataset):
     `.view(self.batch_size, -1)`. The `batch_size` parameter WITHIN a `DataLoader`
     object must be set to `None` if using chunk sampling.
 
-    Attributes:
+    Args:
     --
         `block_size` (`int`): context (sequence) length.
         `size` (`str`): while text file to load, either `"tiny"` or `"large"`.
