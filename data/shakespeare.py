@@ -7,8 +7,14 @@ from typing import Optional
 
 class Shakespeare(Dataset):
     """
-    PyTorch `Dataset` class for the Tiny Shakespeare dataset, found in `input.txt`.
-
+    PyTorch `Dataset` class for loading two different Shakespeare datasets from text files:
+    - `"tiny"`: `shakespeare_1.1M_chars.txt` (`~300k` GTP-2 tokens)
+    - `"large"`: `shakespeare_5.4M_chars.txt` (`~1.6M` GTP-2 tokens)
+    
+    Links to datasets:
+    - `tiny`: https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
+    - `large`: https://gist.githubusercontent.com/blakesanie/dde3a2b7e698f52f389532b4b52bc254/raw/76fe1b5e9efcf0d2afdfd78b0bfaa737ad0a67d3/shakespeare.txt
+    
     Implements both overlapping and non-overlapping samples within batches.
     If `batch_size=None`, overlapping sampling advances by a `+1` sliding window
     to create `(self.tokens.shape[0] - self.block_size) / self.batch_size` samples.
@@ -17,10 +23,6 @@ class Shakespeare(Dataset):
     `self.batch_size * self.block_size` with manual batch construction using
     `.view(self.batch_size, -1)`. The `batch_size` parameter WITHIN a `DataLoader`
     object must be set to `None` if using chunk sampling.
-
-    Dataset links:
-    - `tiny` (`~300k` GTP-2 tokens): https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
-    - `large` (`~1.6M` GPT-2 tokens): https://gist.githubusercontent.com/blakesanie/dde3a2b7e698f52f389532b4b52bc254/raw/76fe1b5e9efcf0d2afdfd78b0bfaa737ad0a67d3/shakespeare.txt
 
     Attributes:
     --
