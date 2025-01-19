@@ -14,10 +14,11 @@ import matplotlib.ticker as ticker
 plt.rcParams["font.size"] = 9
 plt.rcParams["lines.linewidth"] = 1
 from config import *    # import global variables from config.py (all in capital letters)
-from datasets import TinyShakespeare, FineWebEdu
 from model import GPT2_124M, GPT2Config
 from tqdm_bars import tqdmGPT
-from hellaswag import HellaSwag, hs_eval 
+from data.hellaswag import HellaSwag, hs_eval 
+from data.fineweb import FineWebEdu
+from data.shakespeare import Shakespeare
 
 
 def _initialise_ddp() -> tuple:
@@ -317,6 +318,7 @@ def _cycle(iterable):
     """
     Infinitely cycles over an iterable object (e.g. a `DataLoader`) using a generator.
     Used over `itertools.cycle()` to prevent memory leaks for large datasets like `FineWebEdu()`.
+    See: https://github.com/pytorch/pytorch/issues/23900
     """
     iterator = iter(iterable)
     while True:                         
@@ -343,6 +345,15 @@ def _load_fineweb(ddp_world_size: int = 1, ddp_rank: int = 0) -> tuple:
     store the current shard being processed improves continuous iteration until the next shard.
     The validation set only occurs over one shard file, hence only a single shard has to be loaded once
     and so shuffling can occur without major overheads.
+
+    Args:
+    --
+        `ddp_world_size` (`int`): total number of processes for Distributed Data Parallel (DDP) training. Default is `1`.
+        `ddp_rank` (`int`): rank of the current process for DDP training. Default is `0`.
+    
+    Returns:
+    --
+        `tuple`: A tuple containing the training `DataLoader` and validation `DataLoader`.
     """
     # training dataset:
     train_dataset = FineWebEdu(BATCH_SIZE, BLOCK_SIZE, split="train")
@@ -375,15 +386,27 @@ def _load_fineweb(ddp_world_size: int = 1, ddp_rank: int = 0) -> tuple:
     return train_loader, val_loader
 
 
-def _load_shakespeare(ddp_world_size: int = 1, ddp_rank: int = 0) -> tuple:
+def _load_shakespeare(size: str = "tiny", ddp_world_size: int = 1, ddp_rank: int = 0) -> tuple:
     """
-    Loads training and validation `DataLoader` (PyTorch) objects for the `TinyShakespeare()` dataset.
+    Loads training and validation `DataLoader` (PyTorch) iterators for the `Shakespeare()` dataset.
     Supports DDP training with a `DistributedSampler` that splits all available data indicies 
     (defined in `__len__()`) amongst GPU processes.
+
+    See documentation within the `Shakespeare()` `Dataset` class for detailled information on the dataset.
+
+    Args:
+    --
+        `size` (`str`): size of the dataset to load, either `"tiny"` or `"large"`. Default is `"tiny"`.
+        `ddp_world_size` (`int`): total number of processes for Distributed Data Parallel (DDP) training. Default is `1`.
+        `ddp_rank` (`int`): rank of the current process for DDP training. Default is `0`.
+    
+    Returns:
+    --
+        `tuple`: A tuple containing the training `DataLoader` and validation `DataLoader`.
     """
     print(f"\nloading data...\n")
-    train_dataset = TinyShakespeare(BLOCK_SIZE, pct=PCT_DATA, train_split=TRAIN_SPLIT) # load custom Dataset class for training
-    train_sampler = DistributedSampler(     # for DDP: divides the dataset into equal-sized chunks across all GPUs (processes)
+    train_dataset = Shakespeare(BLOCK_SIZE, size, pct=PCT_DATA, train_split=TRAIN_SPLIT)
+    train_sampler = DistributedSampler(     
         train_dataset,
         num_replicas=ddp_world_size,        # total no. of processes
         rank=ddp_rank,                      # current GPU integer ID
@@ -395,10 +418,7 @@ def _load_shakespeare(ddp_world_size: int = 1, ddp_rank: int = 0) -> tuple:
         sampler=train_sampler,              # using DistributedSampler
         pin_memory=True
     )
-    val_dataset = TinyShakespeare(
-        BLOCK_SIZE, pct=PCT_DATA, train_split=TRAIN_SPLIT,
-        split="val", verbose=False
-    )
+    val_dataset = Shakespeare(BLOCK_SIZE, size, split_type="val", train_split=TRAIN_SPLIT, pct=PCT_DATA)
     val_sampler = DistributedSampler(     
         val_dataset,
         num_replicas=ddp_world_size,        
