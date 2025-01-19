@@ -21,6 +21,7 @@ TOTAL_TOKENS    = int(9.9e9)                             # 9.9B total tokens use
 DATA_CACHE_DIR  = os.path.join(os.path.dirname(__file__), LOCAL_DIR)    # construct a full path to the local data cache directory
 ENCODER         = tiktoken.get_encoding("gpt2")                         # initialise GPT-2 tokenizer 
 EOT             = ENCODER._special_tokens["<|endoftext|>"]              # end-of-text (EOT) token 
+LAST_SHARD_SIZE = 82_590_278                        # no. of tokens in the last shard from downloading FineWeb-Edu (sample-10BT)
 
 # ------ HELPER FUNCTIONS ------ #
 
