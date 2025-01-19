@@ -9,42 +9,61 @@ from load_fineweb import SHARD_SIZE, LAST_SHARD_SIZE
 
 class FineWebEdu(Dataset):
     """
-    PyTorch Dataset for FineWeb-Edu (`sample-10BT`) dataset shards.
-    ---
+    A custom PyTorch `torch.utils.data.Dataset` class for FineWeb-Edu (`sample-10BT`) dataset shards.
     Handles the loading of tokenized dataset shards stored as NumPy arrays in `DATA_ROOT`.
     Supports batching of data within a shard file as well as across shard boundaries.
-    Returns input (`X`) and target (`y`) with shape `[batch_size, block_size]`.
+    
+    Link to HuggingFace dataset: https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu
 
-    `__len__()` method:
-    ---
-    Returns the number of available batches in one epoch for a given `split`.
-    Only the first shard with `100M` tokens (`SHARD_SIZE`) is used for the validation set.
-    The training set uses the remaining `99` shards. 
-    N.B. The first `98` shards of the training set hold `100M` tokens each,
-    while the last shard holds exactly `82,590,278` (LAST_SHARD_SIZE) tokens.
+    N.B. Shards should already be downloaded and stored (see `load_fineweb.py`). Only the first shard, 
+    with `SHARD_SIZE` (`100M`) tokens, is used for the validation set. The training set uses the 
+    remaining `99` shards. The first `98` shards of the training set hold `100M` tokens each, 
+    while the last shard holds exactly `LAST_SHARD_SIZE` (`82,590,278`) tokens.
+
+    Args:
+    --
+        `batch_size` (`int`): Number of mini-batch samples to use in a forward pass.
+        `block_size` (`int`): Total context (sequence) length per mini-batch.
+        `split` (`str`): Specifies the dataset split, either `"train"` or `"val"`. Default is `"train"`.
+        `root` (`str`): Directory where the data shards are stored. Default is `DATA_ROOT` defined in `config.py`.
+        `verbose` (`bool`): If `True`, prints number of shard files found during loading.
+
+    Methods:
+    --
+        `_get_shard_paths()`: Gets shard file names from the root directory based on the `split` and constructs their full paths.
+        `_load_shard(shard_idx: int)`: Loads a single shard as a PyTorch tensor of tokens based on the `shard_idx`.
+        `__getitem__(idx: int)`: Returns a single batch of input and target sequences based on `idx` (a batch index).
+        `__len__()`: Returns the total number of batches in the dataset, accounting for `LAST_SHARD_SIZE` if `split=Train`.
     """
 
-    def __init__(self, batch_size: int, block_size: int, split="train", dir=DATA_ROOT, verbose=True):
-        self.verbose = verbose
+    def __init__(
+            self,
+            batch_size: int,
+            block_size: int,
+            split: str = "train",
+            dir: str = DATA_ROOT,
+            verbose: bool = True
+        ):
         assert split.lower() in ["train", "val"], "split must be either 'train' or 'val'"
-        self.split = split              # split to specify __len__() method
         self.batch_size = batch_size    # no. of samples to user in a forward pass
         self.block_size = block_size    # context (sequence) length
-        self.root       = dir           # specify directory where the data shards are stored in config.py
-        self.shards = self._get_shard_paths(split)    # load shards from directory based on split
-        self.cache      = {}            # cache for validation set only
+        self.split = split              # split to specify __len__() method
+        self.root = dir                 # specify directory where the data shards are stored in config.py
+        self.verbose = verbose
+        self.shards = self._get_shard_paths()    # load shards from directory based on split
+        self.cache = {}                 # cache for validation set only
 
-    def _get_shard_paths(self, split):
+    def _get_shard_paths(self):
         """Get shard file names from the root directory (based on the split) to construct their full paths."""
-        names = [f for f in os.listdir(self.root) if split in f]       # get individual shard file names
+        names = [f for f in os.listdir(self.root) if self.split in f]       # get individual shard file names
         shards = [os.path.join(self.root, f) for f in names]               # construct full paths, sorted by name (ascending order)
-        assert len(shards) > 0, f"no shards found for split='{split}' in {self.root}"
+        assert len(shards) > 0, f"no shards found for split='{self.split}' in {self.root}"
         if self.verbose:
-            if split == "val":      # validation set (single shard with 100M tokens)
+            if self.split == "val":      # validation set (single shard with 100M tokens)
                 n = len(shards) * SHARD_SIZE * 1e-9
             else:
                 n = ((len(shards) - 1) * SHARD_SIZE + LAST_SHARD_SIZE) * 1e-9
-            print(f'found {len(shards):,} shard(s) for "{split}" split ({n:.2f} B tokens)')
+            print(f'found {len(shards):,} shard(s) for "{self.split}" split ({n:.2f} B tokens)')
         return shards   # return list of full paths to shards
 
     def _load_shard(self, shard_idx: int):
