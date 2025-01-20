@@ -3,23 +3,49 @@ from torch import nn
 from torch.nn import functional as F
 from dataclasses import dataclass
 import tiktoken
-import inspect
 import math
+import inspect
+
 
 @dataclass
 class GPT2Config:
+    """
+    Configuration class for the GPT-2 model architecture parameters. Default values 
+    match OpenAI's 124M parameter GPT-2 configuration: https://github.com/openai/gpt-2
+
+    `@dataclass` is a decorator that automatically generates the `__init__()` method (as 
+    well as other special methods), adding each member variable as an attribute to the class.
+
+    Attributes:
+    --
+        `block_size` (`int`): Maximum sequence/context length for position embeddings. Default: `1024`.
+        `vocab_size` (`int`): Size of the token vocabulary. Default: `50,257` (later changed to `50,304` `(2^7 * 3 * 131)` for efficiency).
+        `n_layer` (`int`):  Number of transformer layers/blocks in the model. Default: `12`.
+        `n_head` (`int`): Number of attention heads per transformer layer. Default: `12`.
+        `n_embd` (`int`): Embedding dimension size. Default: `768` `(64 * n_head)`.
+    """
     block_size: int = 1024     # max sequence (context) length
-    vocab_size: int = 50257    # size of token vocabulary --> changed to 50,304 (2^7 * 3 * 131) for efficiency
+    vocab_size: int = 50257    # size of token vocabulary --> 
     n_layer: int = 12          # no. of layers
     n_head: int = 12           # no. of heads
     n_embd: int = 768          # embedding dimensions (64 * 12)
 
+
 class Attention(nn.Module):
     """
-    Combined multi-headed self-attention and causal masking.
-    `__call__()` method calculates query, key, values for all heads in a batch and transposes
-    head forward to be the batch dimension. Where transformer channels, `C` (`n_embd`) = `768` 
-    `= n_heads * head_size`, so `head_size = 64` for `GPT-2 (124M)`.
+    Attention module implementing multi-headed self-attention with causal masking.
+
+    The `forward(x)` or `__call__()` method calculates query, key, values for all 
+    heads in a batch and transposes the `n_head` dimenion forward to be the batch 
+    dimension. Where transformer channels, `C` (`n_embd`) = `768` `= n_heads * head_size`, 
+    so `head_size = 64` for GPT-2 (124M).
+
+    Attributes:
+    --
+        `n_head` (`int`): Number of attention heads.
+        `n_embd` (`int`): Embedding dimension size.
+        `c_attn` (`nn.Linear`): Linear layer for computing concatenated queries, keys, and values.
+        `c_proj` (`nn.Linear`): Linear layer for the output projection.
     """
 
     def __init__(self, config):
@@ -31,7 +57,7 @@ class Attention(nn.Module):
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)       # output projection
 
     def forward(self, x):
-        B, T, C = x.shape                                                   # x: [BS, seq_len, n_embd]
+        B, T, C = x.shape                                                   # x:  [BS, seq_len, n_embd]
         QKV = self.c_attn(x)                                                # --> [BS, seq_len, 3 * n_embd]
         Q, K, V = QKV.split(self.n_embd, dim=2)                             # --> [BS, seq_len, n_embd]
         Q = Q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)     # --> [BS, n_head, seq_len, head_size]
@@ -43,12 +69,26 @@ class Attention(nn.Module):
         # attn = F.softmax(attn, dim=-1)
         # y = attn @ V
         # ---
-        y = F.scaled_dot_product_attention(Q, K, V, is_causal=True)         # flash attention
+        y = F.scaled_dot_product_attention(Q, K, V, is_causal=True)         # switched to flash attention
         y = y.transpose(1, 2).contiguous().view(B, T, C)                    # re-assemble all head outputs side by side
         y = self.c_proj(y)                                                  # output projection
         return y
     
+
 class MLP(nn.Module):
+    """
+    A multi-layer perceptron (MLP) module.
+
+    This module consists of a linear layer followed by a GELU activation function
+    and another linear layer. Used as a feed-forward neural network component in 
+    transformer models.
+
+    Attributes:
+    --
+        `c_fc` (`nn.Linear`): The first linear layer.
+        `gelu` (`nn.GELU`): The GELU activation function.
+        `c_proj` (`nn.Linear`): The second linear layer.
+    """
 
     def __init__(self, config):
         super().__init__()
@@ -61,7 +101,18 @@ class MLP(nn.Module):
         x = self.c_proj(x)
         return x
     
+
 class Block(nn.Module):
+    """
+    A Transformer block consisting of a multi-head self-attention mechanism and a feed-forward neural network.
+    
+    Attributes:
+    --
+        `ln_1` (nn.LayerNorm): Layer normalisation applied before the attention mechanism.
+        `attn` (Attention): Multi-head self-attention mechanism.
+        `ln_2` (nn.LayerNorm): Layer normalisation applied before the feed-forward neural network.
+        `mlp` (MLP): Feed-forward neural network.
+    """
 
     def __init__(self, config):
         super().__init__()
@@ -75,8 +126,31 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x
     
+
 class GPT2_124M(nn.Module):
-    """Architecture of the 124M parameter version of GPT-2."""
+    """
+    A PyTorch implementation of the 124M parameter version of GPT-2.
+
+    Attributes:
+    --
+        `config` (Config): Configuration `dataclass` object containing model architecture parameters.
+        `transformer` (`nn.ModuleDict`): Dictionary containing the transformer components:
+            - `"wte"` (`nn.Embedding`): Token embedding layer.
+            - `"wpe"` (`nn.Embedding`): Position embedding layer.
+            - `"h"` (`nn.ModuleList`): List of transformer blocks.
+            - `"ln_f"` (`nn.LayerNorm`): Final layer normalization.
+        `lm_head` (`nn.Linear`): Linear layer for language modeling head.
+        `res_proj_layers` (`list`): List of residual projection layers for weight initialization.
+    
+    Methods:
+    --
+        `_init_weights(self, module)`:
+            Initializes the weights for the model layers following GPT-2's initialisation scheme.
+        `configure_optim(self, weight_decay: float, learning_rate: float, device_type: str) -> torch.optim.AdamW`:
+            Configures and returns an `AdamW` optimizer with set hyperparameters.
+        `sample(self, text: str, n_seqs=5, max_length=30, k=50) -> list`:
+            Generates new samples of text based on an input string.
+    """
 
     def __init__(self, config):
         super().__init__()
@@ -132,8 +206,19 @@ class GPT2_124M(nn.Module):
     def configure_optim(self, weight_decay: float, learning_rate: float, device_type: str) -> torch.optim.AdamW:
         """
         Configures and returns an `torch.optim.AdamW()` optimiser with set hyperparameters taken from GPT-3 (125M).
+        
         Implements a parameter grouping strategy to apply `weight_decay` only to `weight` tensors, excluding `bias`
         and `LayerNorm` parameters. The `AdamW()` optimiser toggles on fused kernels when running on `CUDA` devices.
+
+        Args:
+        --
+            `weight_decay` (`float`): The weight decay value to apply to the weight tensors.
+            `learning_rate` (`float`): The learning rate for the optimiser.
+            `device_type` (`str`): The type of device being used (`"cuda"` or `"cpu"`).
+
+        Returns:
+        --
+            `torch.optim.AdamW`: Configured `AdamW` optimizer.
         """
         decay_params = [p for n, p in self.named_parameters() if p.dim() >= 2 and p.requires_grad]      # weight tensors
         no_decay_params = [p for n, p in self.named_parameters() if p.dim() < 2 and p.requires_grad]    # biases and LayerNorms
@@ -142,12 +227,12 @@ class GPT2_124M(nn.Module):
             {"params": no_decay_params, "weight_decay": 0.0}
         ]
         # -----
-        available = "fused" in inspect.signature(torch.optim.AdamW).parameters  # if new "fused" parameter is available
-        use_fused = True if device_type == "cuda" else False                    # boolean
+        # available = "fused" in inspect.signature(torch.optim.AdamW).parameters    # if "fused" parameter is available
+        use_fused = True if device_type == "cuda" else False                    
         optimiser = torch.optim.AdamW(
             params=optim_groups, lr=learning_rate,
             weight_decay=weight_decay,
-            betas=(0.9, 0.95), eps=1e-8,    # GPT-3 hyperparameters
+            betas=(0.9, 0.95), eps=1e-8,    # taking GPT-3 hyperparameters from paper
             fused=use_fused                 # used fused kernel (accelerate training)
         )
         # --- LOG
@@ -162,18 +247,18 @@ class GPT2_124M(nn.Module):
     
     def sample(self, text: str, n_seqs=5, max_length=30, k=50) -> list:
         """
-        Generate new samples of text based on an input.
-        -----
-        Args:
-            - `text` (`str`) - input string of text to feed into the model.
+        Inference: generate new samples of text based on an input.
 
-        Keyword args:
-            - `n_seqs` (`int`) - number of return sequences to output.
-            - `max_length` (`int`) - token length of each return sequence.
-            - `k` (`int`) - limits sampling to the top `k` most probable tokens at each step.
+        Args:
+        --
+            `text` (`str`) - input string of text to feed into the model.
+            `n_seqs` (`int`) - number of return sequences to output.
+            `max_length` (`int`) - token length of each return sequence.
+            `k` (`int`) - limits sampling to the top `k` most probable tokens at each step.
 
        Returns:
-            - `dict` - dictionary of `n_seqs` generated text samples.
+       --
+            `dict` - dictionary of `n_seqs` generated text samples.
         """
         enc = tiktoken.get_encoding("gpt2")    # use the GPT-2 tokenizer
         tokens = torch.tensor(
