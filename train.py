@@ -21,40 +21,6 @@ from data.fineweb import FineWebEdu
 from data.shakespeare import Shakespeare
 
 
-def _initialise_ddp() -> tuple:
-    """
-    Set up DDP (Distributed Data Parallel) with `torch.distributed` to utilise multi-GPU training.
-    The `torchrun` command will set the `env` variables: `RANK`, `LOCAL_RANK` and `WORLD_SIZE`.
-
-    Returns:
-    --
-    `tuple`: a tuple containing:
-        `ddp_rank` (`int`): global process integer ID (e.g. `0-7` for `8` GPUs).
-        `ddp_local_rank` (`int`): GPU ID on the current node (e.g. `0-7` if all on one machine).
-        `ddp_world_size` (`int`): total number of processes (i.e. number of GPUs).
-        `device` (`torch.device`): device to be used for the current process.
-        `master_process` (`bool`): flag indicating if the current process is the master process (first GPU).
-    """
-    # check if running in a distributed environment (e.g. using torchrun):
-    using_ddp = all(key in os.environ for key in ["RANK", "LOCAL_RANK", "WORLD_SIZE"])    
-    if using_ddp:
-        assert torch.cuda.is_available(), "train.py script cannot be run without CUDA."    # CUDA must be available for DDP
-        init_process_group(backend="nccl")                  # initialise the process group
-        ddp_rank = int(os.environ["RANK"])                  # global process integer ID (e.g. 0-7 for 8 GPUs)
-        ddp_local_rank = int(os.environ["LOCAL_RANK"])      # GPU ID on the current node (e.g. 0-7 if all on one machine)
-        ddp_world_size = int(os.environ["WORLD_SIZE"])      # total no. of processes (i.e. no of GPUs)
-        device = f"cuda:{ddp_local_rank}"                   # select appropriated GPU based on integer IDw
-        torch.cuda.set_device(device)                       # set the device for current process 
-        master_process = (ddp_rank == 0)                    # flag for the first GPU (for logging, checkpointing etc.) 
-        print(f"using DDP with WORLD_SIZE: {ddp_world_size}\n")
-    else:
-        ddp_rank, ddp_local_rank, ddp_world_size = 0, 0, 1  # fallback for non-DDP setup
-        master_process = True
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"\nusing single device: {device}")
-    return ddp_rank, ddp_local_rank, ddp_world_size, device, master_process
-
-
 def train_gpt2(
         compile: bool = False,
         verbose: str = True
@@ -300,6 +266,150 @@ def train_gpt2(
     return model
 
 
+def display_graphs(
+        ddp_world_size: int,
+        epoch_num: int,
+        iter_num: int,
+        truncate: bool = True,
+        log_dir: str = LOG_DIR,
+        checkpoint_type: str = "end",
+        plot_lr: bool = True,
+        save: bool = True,
+        img_format: str = "png"
+    ) -> None:
+    """
+    Plot training results given a model checkpoint directory.
+
+    Loads training and validation losses, HellaSwag evaluation scores, and learning rates
+    from the specified checkpoint directory. The figure consists of two subplots: one for
+    training and validation losses, and one for HellaSwag evaluation scores. Optionally, 
+    it can also plot the learning rate on the same subplot as the losses. The figure can
+    be saved as an image file in the specified `format` type.
+
+    Parameters:
+    --
+        `epoch_num` (`int`): epoch number (starting from `1`) for the checkpoint.
+        `iter_num` (`int`): iteration number (starting from `1`) for the checkpoint.
+        `log_dir` (`str`): directory where the logs and checkpoints are stored.
+        `checkpoint_type` (`str`): prefix of the checkpoint file name (must be `"end"` or `"val"`).
+        `plot_lr` (`bool`): whether to plot the learning rate on the same plot as the losses.
+        `save` (`bool`): whether to save the plot as an image file.
+        `format` (`str`): format to save the plot image (e.g., `"png"`, `"jpg"`).    
+    """
+    assert checkpoint_type in ["end", "val"], "checkpoint_type must be 'end' or 'val'"
+    # get the checkpoint directory from the filename (for the specified epoch and iteration):
+    filename = _get_checkpoint_filename(checkpoint_type, epoch_num, iter_num, ddp_world_size)
+    checkpoint_dir = os.path.join(log_dir, filename)
+    assert os.path.exists(checkpoint_dir), f"checkpoint directory does not exist: {checkpoint_dir}"     # check if the directory exists
+    # load numpy arrays from the checkpoint directory:
+    train_losses = np.load(os.path.join(checkpoint_dir, "train_losses.npy"))
+    val_losses = np.load(os.path.join(checkpoint_dir, "val_losses.npy"))
+    hellaswag_scores = np.load(os.path.join(checkpoint_dir, "hellaswag_scores.npy"))
+    learning_rates = np.load(os.path.join(checkpoint_dir, "learning_rates.npy"))        
+    # truncate arrays up to iter_idx (default):
+    if truncate:
+        train_losses = train_losses[:iter_num]
+        val_losses = val_losses[:iter_num]
+        hellaswag_scores = hellaswag_scores[:iter_num]
+        learning_rates = learning_rates[:iter_num]
+    # ----- MAIN FIGURE ----- #
+    fig, axs = plt.subplots(nrows=1, ncols=2)
+    fig.suptitle(f"GPT2 Training Results: {filename}")  # title for the entire figure
+    x = np.arange(1, len(train_losses) + 1)             # x-values for all plots
+    
+    # --- LEFT SUBPLOT (training and validation losses) --- #
+    axs[0].set_title("Training and Validation Loss")
+    axs[0].set_xlabel("iteration (per GPU)")
+    axs[0].set_ylabel("loss")
+    axs[0].grid(True)
+    axs[0].plot(
+        x, train_losses,
+        label="train_loss", color="tab:olive"
+    )
+    # for val_loss, only plot non-NaN values due to interval storage:
+    val_idx = np.isfinite(val_losses)           # cell turns False if cell was NaN
+    axs[0].plot(
+        x[val_idx], val_losses[val_idx],        # only select elements where val_idx is True (i.e. non-NaN)  
+        label="val_loss", color="tab:purple"
+    )
+    axs[0].axhline(y=3.292, color="tab:red", linestyle="--", label="OpenAI GPT-2 (124M) baseline")
+    axs[1].xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}'))    # comma separator for x-axis tickers
+    # optional: plot learning rates in a twin axis (with losses figure):
+    if plot_lr:
+        lr_color = "tab:cyan"    
+        ax_lr = axs[0].twinx()                              # create a second y-axis for learning rates
+        ax_lr.set_ylabel("learning rate", color=lr_color)
+        ax_lr.plot(
+            x, learning_rates, label="learning_rate",
+            color=lr_color, alpha=0.5                       # set alpha for transparency    
+        )
+        ax_lr.tick_params(axis="y", labelcolor=lr_color)    # set axis tick colour
+        ax_lr.legend()                                      # set legend location
+        # combine legends for twin axes:
+        lines, labels = axs[0].get_legend_handles_labels()
+        lines_lr, labels_lr = ax_lr.get_legend_handles_labels()
+        axs[0].legend(lines + lines_lr, labels + labels_lr, loc="upper right")
+    else:
+        axs[0].legend()                                     # legend for losses
+    
+    # --- RIGHT SUBPLOT (HellaSwag evaluation scores) --- #
+    axs[1].set_title("HellaSwag Evaluation")
+    axs[1].set_xlabel("iteration (per GPU)")
+    axs[1].set_ylabel("accuracy (%)")
+    axs[1].grid(True)
+    axs[1].xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}'))    # comma separator for x-axis tickers
+    hs_idx = np.isfinite(hellaswag_scores)    # bool: False if cell is NaN
+    axs[1].plot(x[hs_idx], hellaswag_scores[hs_idx])
+    # plot baseline scores from other models:
+    axs[1].axhline(y=29.6, color="tab:red", linestyle="--", label="OpenAI GPT-2 (124M) baseline")
+    axs[1].axhline(y=48.9, color="tab:blue", linestyle="--", label="OpenAI GPT-2 (1.56B) baseline")
+    axs[1].axhline(y=54.7, color="tab:green", linestyle="--", label="OpenAI GPT-3 (1.56B) baseline")
+    axs[1].legend()
+    plt.tight_layout()  
+    if save:
+        plt.savefig(
+            f"figure_{filename}", 
+            dpi=300, bbox_inches="tight",
+            format=img_format
+        )
+    plt.show()
+
+# ---------- HELPER FUNCTIONS ---------- #
+
+def _initialise_ddp() -> tuple:
+    """
+    Set up DDP (Distributed Data Parallel) with `torch.distributed` to utilise multi-GPU training.
+    The `torchrun` command will set the `env` variables: `RANK`, `LOCAL_RANK` and `WORLD_SIZE`.
+
+    Returns:
+    --
+    `tuple`: a tuple containing:
+        `ddp_rank` (`int`): global process integer ID (e.g. `0-7` for `8` GPUs).
+        `ddp_local_rank` (`int`): GPU ID on the current node (e.g. `0-7` if all on one machine).
+        `ddp_world_size` (`int`): total number of processes (i.e. number of GPUs).
+        `device` (`torch.device`): device to be used for the current process.
+        `master_process` (`bool`): flag indicating if the current process is the master process (first GPU).
+    """
+    # check if running in a distributed environment (e.g. using torchrun):
+    using_ddp = all(key in os.environ for key in ["RANK", "LOCAL_RANK", "WORLD_SIZE"])    
+    if using_ddp:
+        assert torch.cuda.is_available(), "train.py script cannot be run without CUDA."    # CUDA must be available for DDP
+        init_process_group(backend="nccl")                  # initialise the process group
+        ddp_rank = int(os.environ["RANK"])                  # global process integer ID (e.g. 0-7 for 8 GPUs)
+        ddp_local_rank = int(os.environ["LOCAL_RANK"])      # GPU ID on the current node (e.g. 0-7 if all on one machine)
+        ddp_world_size = int(os.environ["WORLD_SIZE"])      # total no. of processes (i.e. no of GPUs)
+        device = f"cuda:{ddp_local_rank}"                   # select appropriated GPU based on integer IDw
+        torch.cuda.set_device(device)                       # set the device for current process 
+        master_process = (ddp_rank == 0)                    # flag for the first GPU (for logging, checkpointing etc.) 
+        print(f"using DDP with WORLD_SIZE: {ddp_world_size}\n")
+    else:
+        ddp_rank, ddp_local_rank, ddp_world_size = 0, 0, 1  # fallback for non-DDP setup
+        master_process = True
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"\nusing single device: {device}")
+    return ddp_rank, ddp_local_rank, ddp_world_size, device, master_process
+
+
 def _value_reduce(value: float, device: torch.device) -> float:
     """
     Helper function to reduce a single value across all GPU processes.
@@ -503,112 +613,3 @@ def _load_hellaswag(ddp_world_size: int, ddp_rank: int, split: str = "val") -> D
         pin_memory=True 
     )
     return hs_loader
-
-
-def display_graphs(
-        ddp_world_size: int,
-        epoch_num: int,
-        iter_num: int,
-        truncate: bool = True,
-        log_dir: str = LOG_DIR,
-        checkpoint_type: str = "end",
-        plot_lr: bool = True,
-        save: bool = True,
-        img_format: str = "png"
-    ) -> None:
-    """
-    Plot training results given a model checkpoint directory.
-
-    Loads training and validation losses, HellaSwag evaluation scores, and learning rates
-    from the specified checkpoint directory. The figure consists of two subplots: one for
-    training and validation losses, and one for HellaSwag evaluation scores. Optionally, 
-    it can also plot the learning rate on the same subplot as the losses. The figure can
-    be saved as an image file in the specified `format` type.
-
-    Parameters:
-    --
-        `epoch_num` (`int`): epoch number (starting from `1`) for the checkpoint.
-        `iter_num` (`int`): iteration number (starting from `1`) for the checkpoint.
-        `log_dir` (`str`): directory where the logs and checkpoints are stored.
-        `checkpoint_type` (`str`): prefix of the checkpoint file name (must be `"end"` or `"val"`).
-        `plot_lr` (`bool`): whether to plot the learning rate on the same plot as the losses.
-        `save` (`bool`): whether to save the plot as an image file.
-        `format` (`str`): format to save the plot image (e.g., `"png"`, `"jpg"`).    
-    """
-    assert checkpoint_type in ["end", "val"], "checkpoint_type must be 'end' or 'val'"
-    # get the checkpoint directory from the filename (for the specified epoch and iteration):
-    filename = _get_checkpoint_filename(checkpoint_type, epoch_num, iter_num, ddp_world_size)
-    checkpoint_dir = os.path.join(log_dir, filename)
-    assert os.path.exists(checkpoint_dir), f"checkpoint directory does not exist: {checkpoint_dir}"     # check if the directory exists
-    # load numpy arrays from the checkpoint directory:
-    train_losses = np.load(os.path.join(checkpoint_dir, "train_losses.npy"))
-    val_losses = np.load(os.path.join(checkpoint_dir, "val_losses.npy"))
-    hellaswag_scores = np.load(os.path.join(checkpoint_dir, "hellaswag_scores.npy"))
-    learning_rates = np.load(os.path.join(checkpoint_dir, "learning_rates.npy"))        
-    # truncate arrays up to iter_idx (default):
-    if truncate:
-        train_losses = train_losses[:iter_num]
-        val_losses = val_losses[:iter_num]
-        hellaswag_scores = hellaswag_scores[:iter_num]
-        learning_rates = learning_rates[:iter_num]
-    # ----- MAIN FIGURE ----- #
-    fig, axs = plt.subplots(nrows=1, ncols=2)
-    fig.suptitle(f"GPT2 Training Results: {filename}")  # title for the entire figure
-    x = np.arange(1, len(train_losses) + 1)             # x-values for all plots
-    
-    # --- LEFT SUBPLOT (training and validation losses) --- #
-    axs[0].set_title("Training and Validation Loss")
-    axs[0].set_xlabel("iteration (per GPU)")
-    axs[0].set_ylabel("loss")
-    axs[0].grid(True)
-    axs[0].plot(
-        x, train_losses,
-        label="train_loss", color="tab:olive"
-    )
-    # for val_loss, only plot non-NaN values due to interval storage:
-    val_idx = np.isfinite(val_losses)           # cell turns False if cell was NaN
-    axs[0].plot(
-        x[val_idx], val_losses[val_idx],        # only select elements where val_idx is True (i.e. non-NaN)  
-        label="val_loss", color="tab:purple"
-    )
-    axs[0].axhline(y=3.292, color="tab:red", linestyle="--", label="OpenAI GPT-2 (124M) baseline")
-    axs[1].xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}'))    # comma separator for x-axis tickers
-    # optional: plot learning rates in a twin axis (with losses figure):
-    if plot_lr:
-        lr_color = "tab:cyan"    
-        ax_lr = axs[0].twinx()                              # create a second y-axis for learning rates
-        ax_lr.set_ylabel("learning rate", color=lr_color)
-        ax_lr.plot(
-            x, learning_rates, label="learning_rate",
-            color=lr_color, alpha=0.5                       # set alpha for transparency    
-        )
-        ax_lr.tick_params(axis="y", labelcolor=lr_color)    # set axis tick colour
-        ax_lr.legend()                                      # set legend location
-        # combine legends for twin axes:
-        lines, labels = axs[0].get_legend_handles_labels()
-        lines_lr, labels_lr = ax_lr.get_legend_handles_labels()
-        axs[0].legend(lines + lines_lr, labels + labels_lr, loc="upper right")
-    else:
-        axs[0].legend()                                     # legend for losses
-    
-    # --- RIGHT SUBPLOT (HellaSwag evaluation scores) --- #
-    axs[1].set_title("HellaSwag Evaluation")
-    axs[1].set_xlabel("iteration (per GPU)")
-    axs[1].set_ylabel("accuracy (%)")
-    axs[1].grid(True)
-    axs[1].xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}'))    # comma separator for x-axis tickers
-    hs_idx = np.isfinite(hellaswag_scores)    # bool: False if cell is NaN
-    axs[1].plot(x[hs_idx], hellaswag_scores[hs_idx])
-    # plot baseline scores from other models:
-    axs[1].axhline(y=29.6, color="tab:red", linestyle="--", label="OpenAI GPT-2 (124M) baseline")
-    axs[1].axhline(y=48.9, color="tab:blue", linestyle="--", label="OpenAI GPT-2 (1.56B) baseline")
-    axs[1].axhline(y=54.7, color="tab:green", linestyle="--", label="OpenAI GPT-3 (1.56B) baseline")
-    axs[1].legend()
-    plt.tight_layout()  
-    if save:
-        plt.savefig(
-            f"figure_{filename}", 
-            dpi=300, bbox_inches="tight",
-            format=img_format
-        )
-    plt.show()
