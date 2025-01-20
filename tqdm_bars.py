@@ -1,9 +1,3 @@
-"""
-Custom tqdm progress bars for logging stats with:
-1. FineWeb-Edu Sample-10BT dataset processing with shards
-2. GPT-2 (124) training loop.
-"""
-
 from tqdm import tqdm
 import time    # using time.sleep() for a dummy training loop
 import datetime
@@ -11,12 +5,12 @@ import datetime
 
 class tqdmGPT(tqdm):
     """
-    Custom `tqdm` progress bar for the `GPT-2` training loop.
+    Custom `tqdm` progress bar for monitoring progress and tracking metrics during model training.
     
     Attributes:
     --
-        `n_tokens` (`int`): number of tokens processed.
-        `steps` (`int`): number of gradient accumulation steps (to calculate `iter/s`).
+        `n_tokens` (`int`): number of tokens processed per mini-batch.
+        `steps` (`int`): number of gradient accumulation steps.
     """
 
     def __init__(self, *args, acc_steps: int, n_tokens: int, **kwargs):
@@ -63,10 +57,40 @@ class tqdmGPT(tqdm):
         return d
 
 
+class tqdmFW(tqdm):
+    """
+    Custom `tqdm` progress bar for monitoring progress during FineWeb-Edu `sample-10BT` dataset processing.
+
+    Created solely for shard downloading progress in `load_fineweb.py`.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        params = {
+            "bar_format": "{desc}[{bar:10}] {n_fmt}/{total_fmt} ({percentage:.1f}% complete) | [{elapsed}<{remaining}, {rate_fmt}]",
+            "ascii": "->=",
+            "mininterval": 3,
+        }
+        for key, value in params.items():
+            kwargs.setdefault(key, value)
+        super().__init__(*args, **kwargs)       # pass to constructor of parent class
+
+    @property
+    def format_dict(self):
+        d = super().format_dict
+        d["n_fmt"] = f"{d['n'] * 1e-9:.2f}B" if d["n"] else "?"                 # current iteration (tokens processed) in billions
+        d["total_fmt"] = f"{d['total'] * 1e-9:.2f}B" if d["total"] else "?"     # total iterations (tokens to process) in billions
+        if (d["rate"] is not None) and (d["rate"] < 1e6):                       # rate of processing tokens
+            d["rate_fmt"] = f"{d['rate'] * 1e-3:.2f}k tok/sec" if d["rate"] else "?"    # in thousands
+        else:
+            d["rate_fmt"] = f"{d['rate'] * 1e-6:.2f}M tok/sec" if d["rate"] else "?"    # in millions
+        return d
+    
+
 class tqdmHS(tqdm):
     """
-    Custom tqdm progress bar for evaluating on a HellaSwag dataset.
-    Only displayed if `verbose=True` in `evaluate()` - see `hellaswag.py`.
+    Custom `tqdm` progress bar for monitoring progress during evaluation on a HellaSwag dataset.
+
+    Created for the `hs_eval()` function in `hellaswag.py` - only displays if `verbose=True`.
     """
 
     def __init__(self, *args, **kwargs):
@@ -94,34 +118,9 @@ class tqdmHS(tqdm):
         return d
     
 
-class tqdmFW(tqdm):
-    """Custom tqdm progress bar for FineWeb-Edu Sample-10BT dataset processing."""
-    
-    def __init__(self, *args, **kwargs):
-        params = {
-            "bar_format": "{desc}[{bar:10}] {n_fmt}/{total_fmt} ({percentage:.1f}% complete) | [{elapsed}<{remaining}, {rate_fmt}]",
-            "ascii": "->=",
-            "mininterval": 3,
-        }
-        for key, value in params.items():
-            kwargs.setdefault(key, value)
-        super().__init__(*args, **kwargs)       # pass to constructor of parent class
-
-    @property
-    def format_dict(self):
-        d = super().format_dict
-        d["n_fmt"] = f"{d['n'] * 1e-9:.2f}B" if d["n"] else "?"                 # current iteration (tokens processed) in billions
-        d["total_fmt"] = f"{d['total'] * 1e-9:.2f}B" if d["total"] else "?"     # total iterations (tokens to process) in billions
-        if (d["rate"] is not None) and (d["rate"] < 1e6):                       # rate of processing tokens
-            d["rate_fmt"] = f"{d['rate'] * 1e-3:.2f}k tok/sec" if d["rate"] else "?"    # in thousands
-        else:
-            d["rate_fmt"] = f"{d['rate'] * 1e-6:.2f}M tok/sec" if d["rate"] else "?"    # in millions
-        return d
-    
-
 def test_tqdmGPT():
     """
-    Example usage of `tqdmGPT `with a dummy training loop.
+    Example usage of `tqdmGPT()` with a dummy training loop.
 
     Example progress bar output (all within a single line):
 
