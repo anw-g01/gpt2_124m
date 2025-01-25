@@ -2,8 +2,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader, DistributedSampler
 import numpy as np
 import os
-from ..config import DATA_ROOT
-from ..train import _cycle   
+from config import DATA_ROOT
 from load_fineweb import SHARD_SIZE, LAST_SHARD_SIZE
 
 
@@ -134,6 +133,20 @@ class FineWebEdu(Dataset):
         # else, for the training set, account for the last shard holding 82,590,278 tokens 
         return ((len(self.shards) - 1) * SHARD_SIZE + LAST_SHARD_SIZE) // chunk_size     
 
+
+def _cycle(iterable):
+    """
+    Infinitely cycles over an iterable object (e.g. a `DataLoader`) using a generator.
+    Used over `itertools.cycle()` to prevent memory leaks for large datasets like `FineWebEdu()`.
+    See: https://github.com/pytorch/pytorch/issues/23900
+    """
+    iterator = iter(iterable)
+    while True:                         
+        try:    
+            yield next(iterator)        # yield the next item in the iterator
+        except StopIteration:           # iterator reaches the end
+            iterator = iter(iterable)   # reset the iterator
+            
 
 if __name__ == "__main__":
 
