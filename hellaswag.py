@@ -8,7 +8,7 @@ import json
 from tqdm_bars import tqdmHS
 import os
 from typing import Optional, Tuple
-from ..model import GPT2_124M, GPT2Config
+from model import GPT2_124M, GPT2Config
 
 
 class HellaSwag(Dataset):
@@ -126,34 +126,34 @@ class HellaSwag(Dataset):
 def hs_eval(
         data_loader: DataLoader,
         model: Optional[GPT2_124M] = None,  
-        device: str = "cuda",
         verbose: bool = False,
         model_type: str = "gpt2",
+        device: str = "cuda",
         compile: bool = False
     ) -> Tuple[int, int]:
     """
     Evaluate a specified `GPT2_124M` model on a HellaSwag dataset. If no `model` is specified, 
-    the function will use a pretrained `GPT-2` model from HuggingFace.
+    the function will use a pretrained `GPT-2` model from HuggingFace. The `model_type`, `device` 
+    and `compile` arguments are only for if a model isn't already specified.
 
     The function iterates through examples in a PyTorch `DataLoader` which must contain a 
     `HellaSwag` `Dataset` object. The `DataLoader` MUST be set with `batch_size=None` as 
     each example is inherently a batch of `4` candidate ending tokens.
 
-    For each example, the function renders the context and 
-    ending candidates and calculates the average cross entropy loss of the model's predictions 
-    for each set of ending candidates. The candidate with the lowest loss is chosen as the 
-    predicted ending. A tally of correct predictions against ground truth labels is kept and 
-    returned at the end of evaluation.
+    For each example, the function renders the context and ending candidates and calculates 
+    the average cross entropy loss of the model's predictions for each set of ending candidates. 
+    The candidate with the lowest loss is chosen as the predicted ending. A tally of correct 
+    predictions against ground truth labels is kept and returned at the end of evaluation.
 
     Args:
     --
         `data_loader` (`DataLoader`): a PyTorch data loader containing a specific split of the HellaSwag dataset.
         `model` (`Optional[GPT2_124M]`): the `GPT2_124M` model to evaluate. If `None`, a pretrained `GPT-2 model` from HuggingFace will be used.
-        `device` (`str`): the device to run the evaluation on. Default is `"cuda"`.
         `verbose` (`bool`): if `True`, progress will be logged. Default is `False`.
         `model_type` (`str`): the type of `GPT-2` model to use if no `model` is specified. 
         e.g. use `"gpt2-xl"` for the `1.5B` parameter `GPT-2` model; default is `"gpt2"` (`124M`).
-        `compile` (`bool`): if True, the model will be compiled with `torch.compile`. Default is `False`.
+        `device` (`str`): the device to run the HuggingFace evaluation on. Default is `"cuda"`.
+        `compile` (`bool`): if True, HuggingFace model will be compiled with `torch.compile`. Default is `False`.
     
     Returns:
     --
@@ -169,8 +169,8 @@ def hs_eval(
         print(f"using HuggingFace model: {model_type}...\n")
     else:
         using_model = True
-        model.to(device)
-    model = torch.compile(model) if compile else model
+        model.to(device)                                        # HuggingFace model to specified device
+        model = torch.compile(model) if compile else model      # whether to compile HuggingFace model (only)
     model.eval()    # set model to evaluation mode
 
     pbar = tqdmHS(
