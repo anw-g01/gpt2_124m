@@ -4,6 +4,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
+from torch.distributed.optim import ZeroRedundancyOptimizer
 import torch.distributed as dist
 import numpy as np
 import math
@@ -16,14 +17,15 @@ plt.rcParams["lines.linewidth"] = 1
 from config import *    # import global variables from config.py (all in capital letters)
 from model import GPT2_124M, GPT2Config
 from tqdm_bars import tqdmGPT
-from data.hellaswag import HellaSwag, hs_eval 
-from data.fineweb import FineWebEdu
-from data.shakespeare import Shakespeare
+from hellaswag import HellaSwag, hs_eval 
+from fineweb import FineWebEdu
+from shakespeare import Shakespeare
 
 
 def train_gpt2(
         compile: bool = False,
-        verbose: str = True
+        verbose: str = True,
+        use_zero: str = False
     ) -> tuple:
     """
     Parameters:
@@ -33,6 +35,8 @@ def train_gpt2(
         `CHECKPOINT_INTVERAL` steps. Default is `True`. This does not have any effect on the custom 
         `tqdmGPT` progress bar which will always be displayed during training by default. Print logs 
         will also always occur to signify the end of an epoch by default.
+        `use_zero` (`str`): whether to use ZeroRedundancyOptimizer (ZeRO) for distributed training. 
+        See source link: https://pytorch.org/tutorials/recipes/zero_redundancy_optimizer.html
     
     Returns:
     --
@@ -89,18 +93,26 @@ def train_gpt2(
     total_iterations = iters_per_epoch * EPOCHS     # total no. of complete training batches to process for full training (per GPU)
 
     model = GPT2_124M(GPT2Config(vocab_size=50304)).to(DEVICE)      # increase vocab size to (2^7 * 3 * 131)
-    optimiser = model.configure_optim(WEIGHT_DECAY, MAX_LEARNING_RATE, DEVICE.type)
+    model = torch.compile(model) if compile else model              # compile model if specified
+    raw_model = model.module if DDP_WORLD_SIZE > 1 else model       # to access the "raw" unwrapped model
+    # if using DDP, wrap model in a PyTorch DDP container
+    if DDP_WORLD_SIZE > 1:                                          
+        model = DDP(model, device_ids=[DDP_LOCAL_RANK])    
+    # configure an optimiser 
+    if use_zero:
+        optimiser = ZeroRedundancyOptimizer(
+            raw_model.configure_optim(WEIGHT_DECAY, MAX_LEARNING_RATE, DEVICE.type).param_groups,
+            optimizer_class=torch.optim.AdamW,      # use AdamW as the base optimizer
+            lr=MAX_LEARNING_RATE,                   
+            weight_decay=WEIGHT_DECAY,               
+        )
+    else:
+        optimiser = model.configure_optim(WEIGHT_DECAY, MAX_LEARNING_RATE, DEVICE.type)
     scheduler = CosineAnnealingLR(
         optimizer=optimiser,
         T_max=(total_iterations - WARMUP_STEPS),    # iterations over which decay starts (after linear warmup phase)
         eta_min=0.1*MAX_LEARNING_RATE               # set minimum learning rate to 10% of the maximum
     )
-    
-    model = torch.compile(model) if compile else model      # compile model if specified
-    # if using DDP, wrap model in a PyTorch DDP container
-    if DDP_WORLD_SIZE > 1:                                          
-        model = DDP(model, device_ids=[DDP_LOCAL_RANK])             
-    # raw_model = model.module if DDP_WORLD_SIZE > 1 else model       # to access the "raw" unwrapped model
 
     if MASTER_PROCESS:
         if compile:
@@ -496,54 +508,6 @@ def _load_fineweb(ddp_world_size: int = 1, ddp_rank: int = 0) -> tuple:
     return train_loader, val_loader
 
 
-def _load_shakespeare(size: str = "tiny", ddp_world_size: int = 1, ddp_rank: int = 0) -> tuple:
-    """
-    Loads training and validation `DataLoader` (PyTorch) iterators for the `Shakespeare()` dataset.
-    Supports DDP training with a `DistributedSampler` that splits all available data indicies 
-    (defined in `__len__()`) amongst GPU processes.
-
-    See documentation within the `Shakespeare()` `Dataset` class for detailled information on the dataset.
-
-    Args:
-    --
-        `size` (`str`): size of the dataset to load, either `"tiny"` or `"large"`. Default is `"tiny"`.
-        `ddp_world_size` (`int`): total number of processes for Distributed Data Parallel (DDP) training. Default is `1`.
-        `ddp_rank` (`int`): rank of the current process for DDP training. Default is `0`.
-    
-    Returns:
-    --
-        `tuple`: A tuple containing the training `DataLoader` and validation `DataLoader`.
-    """
-    print(f"\nloading data...\n")
-    train_dataset = Shakespeare(BLOCK_SIZE, size, pct=PCT_DATA, train_split=TRAIN_SPLIT)
-    train_sampler = DistributedSampler(     
-        train_dataset,
-        num_replicas=ddp_world_size,        # total no. of processes
-        rank=ddp_rank,                      # current GPU integer ID
-        shuffle=True
-    )
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=BATCH_SIZE,
-        sampler=train_sampler,              # using DistributedSampler
-        pin_memory=True
-    )
-    val_dataset = Shakespeare(BLOCK_SIZE, size, split_type="val", train_split=TRAIN_SPLIT, pct=PCT_DATA)
-    val_sampler = DistributedSampler(     
-        val_dataset,
-        num_replicas=ddp_world_size,        
-        rank=ddp_rank,                      
-        shuffle=True
-    )
-    val_loader = DataLoader(                
-        val_dataset,
-        batch_size=BATCH_SIZE,              
-        sampler=val_sampler,              
-        pin_memory=True
-    )
-    return train_loader, val_loader 
-
-
 def _load_hellaswag(ddp_world_size: int, ddp_rank: int, split: str = "val") -> DataLoader:
     """
     Returns a HellaSwag `DataLoader` to iterate over for evaluation.
@@ -613,3 +577,51 @@ def _load_hellaswag(ddp_world_size: int, ddp_rank: int, split: str = "val") -> D
         pin_memory=True 
     )
     return hs_loader
+
+
+def _load_shakespeare(size: str = "tiny", ddp_world_size: int = 1, ddp_rank: int = 0) -> tuple:
+    """
+    Loads training and validation `DataLoader` (PyTorch) iterators for the `Shakespeare()` dataset.
+    Supports DDP training with a `DistributedSampler` that splits all available data indicies 
+    (defined in `__len__()`) amongst GPU processes.
+
+    See documentation within the `Shakespeare()` `Dataset` class for detailled information on the dataset.
+
+    Args:
+    --
+        `size` (`str`): size of the dataset to load, either `"tiny"` or `"large"`. Default is `"tiny"`.
+        `ddp_world_size` (`int`): total number of processes for Distributed Data Parallel (DDP) training. Default is `1`.
+        `ddp_rank` (`int`): rank of the current process for DDP training. Default is `0`.
+    
+    Returns:
+    --
+        `tuple`: A tuple containing the training `DataLoader` and validation `DataLoader`.
+    """
+    print(f"\nloading data...\n")
+    train_dataset = Shakespeare(BLOCK_SIZE, size, pct=PCT_DATA, train_split=TRAIN_SPLIT)
+    train_sampler = DistributedSampler(     
+        train_dataset,
+        num_replicas=ddp_world_size,        # total no. of processes
+        rank=ddp_rank,                      # current GPU integer ID
+        shuffle=True
+    )
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        sampler=train_sampler,              # using DistributedSampler
+        pin_memory=True
+    )
+    val_dataset = Shakespeare(BLOCK_SIZE, size, split_type="val", train_split=TRAIN_SPLIT, pct=PCT_DATA)
+    val_sampler = DistributedSampler(     
+        val_dataset,
+        num_replicas=ddp_world_size,        
+        rank=ddp_rank,                      
+        shuffle=True
+    )
+    val_loader = DataLoader(                
+        val_dataset,
+        batch_size=BATCH_SIZE,              
+        sampler=val_sampler,              
+        pin_memory=True
+    )
+    return train_loader, val_loader 
