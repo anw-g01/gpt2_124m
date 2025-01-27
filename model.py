@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import tiktoken
 import math
 import inspect
-
+import textwrap
 
 @dataclass
 class GPT2Config:
@@ -245,34 +245,52 @@ class GPT2_124M(nn.Module):
         print(f"using fused AdamW: {use_fused} (device={device_type})")
         return optimiser
     
-    def sample(self, text: str, n_seqs=5, max_length=30, k=50) -> list:
+    def sample(
+            self,
+            input: str, 
+            n_seqs: int = 5, 
+            max_length: int = 30, 
+            k: int = 50, 
+            verbose: bool = True
+        ) -> list:
         """
         Inference: generate new samples of text based on an input.
 
         Args:
         --
-            `text` (`str`) - input string of text to feed into the model.
-            `n_seqs` (`int`) - number of return sequences to output.
-            `max_length` (`int`) - token length of each return sequence.
-            `k` (`int`) - limits sampling to the top `k` most probable tokens at each step.
+            `input` (`str`): Input string of text to feed into the model. 
+            `n_seqs` (`int`): Number of return sequences to output. Default: `5`.
+            `max_length` (`int`): Token length of each return sequence. Default: `30`.
+            `k` (`int`): Limits sampling to the top `k` most probable tokens at each step. Default: `50`.
+            `verbose` (`bool`): Whether to print sampling progress and print final generations. Default: `True`.
 
        Returns:
        --
-            `dict` - dictionary of `n_seqs` generated text samples.
+            `dict`: dictionary of `n_seqs` generated text samples, where each sequence is a key.
         """
-        enc = tiktoken.get_encoding("gpt2")    # use the GPT-2 tokenizer
-        tokens = torch.tensor(
-            data=enc.encode(text),
+        device = next(self.parameters()).device     # use the same device as the model
+        enc = tiktoken.get_encoding("gpt2")         # use the GPT-2 tokenizer
+        # create tensor of encoded prompt tokens (a row for each sequence):
+        x = torch.tensor(   
+            data=enc.encode(input),
             dtype=torch.long,
-            device=torch.device("cuda")
-        ).unsqueeze(0).repeat(n_seqs, 1)
+            device=device
+        ).unsqueeze(0).repeat(n_seqs, 1)            # repeat the prompt across n_seqs rows
+
         i, n = 1, max_length - x.shape[1]    # starting token idx, tokens left to generate
         while x.shape[1] < max_length:
-            pct = (i / n) * 100
-            print(f"\rsampling {i}/{n} ({pct:.0f}%)", end="")
+            if verbose:
+                pct = (i / n) * 100
+                print(f"\rsampling tokens... {i}/{n} ({pct:.0f}%)", end="")
+
             with torch.no_grad():
-                logits, _ = self(x)         # model forward pass --> [n_seqs, curr_seq_length, vocab_size]
-                logits = logits[:, -1, :]   # take logits of last token --> [n_seqs, vocab_size]
+                if device.type == "cuda":
+                    with torch.autocast(device.type, dtype=torch.bfloat16):
+                        logits, _ = self(x)     # model forward pass --> [n_seqs, curr_seq_length, vocab_size]
+                else:                           # run in full precision on CPU   
+                    logits, _ = self(x)         # much faster without autocast if using CPU
+                
+                logits = logits[:, -1, :]       # take logits of last token --> [n_seqs, vocab_size]
                 probs = F.softmax(logits, dim=-1)
                 # filter to sample from the top 'k' most probable tokens:
                 topk_probs, topk_ids = torch.topk(probs, k, dim=-1)     # --> [n_seqs, k]
@@ -282,7 +300,28 @@ class GPT2_124M(nn.Module):
                 x = torch.cat((x, x_col), dim=1)    # concatenate newly sampled tokens --> [n_seqs, curr_seq_length + 1]
             i += 1
         # final x.shape --> [n_seqs, max_length]
-        out = {}
-        for i in range(x):
-            out[i] = x[i:max_length].tolist()
-        return out
+        
+        # decode the generated token sequences to text and store in dictionary:
+        outputs = {}
+        for i in range(x.shape[0]):
+            text = enc.decode(x[i, :max_length].tolist())   # (optional) slice to length of max_length 
+            outputs[i] = text
+
+        # print final generations if verbose=True:
+        if verbose:
+            print(f"")  # new line due to carriage return from sampling progress
+            for i, text in outputs.items():
+                wrapped_text = textwrap.fill(text, width=100)        # wrap text to 80 characters
+                print(f"\nSEQUENCE: {i + 1}:\n{wrapped_text}")
+        return outputs    # return dictionary of generated text samples
+    
+
+if __name__ == "__main__":
+
+    # example text generation with an untrained model:
+
+    model = GPT2_124M(GPT2Config())         # instantiate a new initialised model
+
+    model.sample("It is given that the")    # generate text samples based on an input
+
+    
