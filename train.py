@@ -238,9 +238,9 @@ def train_gpt2(
                     raw_model = model.module if DDP_WORLD_SIZE > 1 else model                   # access the "raw" unwrapped model if DDP
                     # create a sub-directory for each checkpoint inside LOG_DIR:
                     prefix = "end" if (local_i == iters_per_epoch - 1) else "val"               # "end" prefix for epoch end
-                    filename = _get_checkpoint_filename(prefix, epoch + 1, i, DDP_WORLD_SIZE)    # get a standardised filename
+                    filename = _get_checkpoint_filename(prefix, epoch + 1, i, DDP_WORLD_SIZE)   # get a standardised filename
                     checkpoint_dir = os.path.join(LOG_DIR, filename)                            # create a new checkpoint directory
-                    checkpoint_path = os.path.join(checkpoint_dir, f"model.pt")                 # path to save PyTorch model weights
+                    checkpoint_path = os.path.join(checkpoint_dir, f"model_checkpoint.pt")      # path to save PyTorch model weights
                     # dictionary to store all metrics:
                     checkpoint = {      
                         "epoch": epoch + 1, 

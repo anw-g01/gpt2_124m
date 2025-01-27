@@ -1,3 +1,4 @@
+import torch
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -6,6 +7,7 @@ plt.rcParams["font.size"] = 9
 plt.rcParams["lines.linewidth"] = 1
 from config import LOG_DIR
 from train import _get_checkpoint_filename
+from model import GPT2_124M, GPT2Config
 
 
 def display_graphs(
@@ -18,7 +20,7 @@ def display_graphs(
         plot_lr: bool = True,
         save: bool = True,
         img_format: str = "png"
-    ) -> None:
+    ) -> str:
     """
     Plot training results given a model checkpoint directory.
 
@@ -36,7 +38,7 @@ def display_graphs(
         `checkpoint_type` (`str`): prefix of the checkpoint file name (must be `"end"` or `"val"`).
         `plot_lr` (`bool`): whether to plot the learning rate on the same plot as the losses.
         `save` (`bool`): whether to save the plot as an image file.
-        `format` (`str`): format to save the plot image (e.g., `"png"`, `"jpg"`).    
+        `format` (`str`): format to save the plot image (e.g., `"png"`, `"jpg"`).   
     """
     assert checkpoint_type in ["end", "val"], "checkpoint_type must be 'end' or 'val'"
     # get the checkpoint directory from the filename (for the specified epoch and iteration):
@@ -115,6 +117,16 @@ def display_graphs(
             format=img_format
         )
     plt.show()
+
+    # get directory path to the .pt checkpoint file:
+    print(f"\nloading model and state_dict from checkpoint: {filename}")
+    model_checkpoint_dir = os.path.join(checkpoint_dir, "model_checkpoint.pt")      # path to the .pt file holding dictionary of checkpoints file
+    checkpoint = torch.load(model_checkpoint_dir)                                   # load the .pt file for dictionary of checkpoints
+    # create a new model instance and load the state_dict from the dictionary:
+    model = GPT2_124M(GPT2Config(vocab_size=50304))                                 # create new model instance, must be same config as trained model
+    model.load_state_dict(checkpoint["model_state_dict"])                           # load the model state_dict from the dictionary
+    # generate text samples from the model:
+    model.sample("Hello, I'm a")     
 
 
 if __name__ == "__main__":
