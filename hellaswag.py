@@ -128,13 +128,12 @@ def hs_eval(
         model: Optional[GPT2_124M] = None,  
         verbose: bool = False,
         model_type: str = "gpt2",
-        device: str = "cuda",
         compile: bool = False
     ) -> Tuple[int, int]:
     """
     Evaluate a specified `GPT2_124M` model on a HellaSwag dataset. If no `model` is specified, 
-    the function will use a pretrained `GPT-2` model from HuggingFace. The `model_type`, `device` 
-    and `compile` arguments are only for if a model isn't already specified.
+    the function will use a pretrained `GPT-2` model from HuggingFace. The `model_type` and 
+    `compile` arguments are only for if a model isn't already specified.
 
     The function iterates through examples in a PyTorch `DataLoader` which must contain a 
     `HellaSwag` `Dataset` object. The `DataLoader` MUST be set with `batch_size=None` as 
@@ -152,7 +151,6 @@ def hs_eval(
         `verbose` (`bool`): if `True`, progress will be logged. Default is `False`.
         `model_type` (`str`): the type of `GPT-2` model to use if no `model` is specified. 
         e.g. use `"gpt2-xl"` for the `1.5B` parameter `GPT-2` model; default is `"gpt2"` (`124M`).
-        `device` (`str`): the device to run the HuggingFace evaluation on. Default is `"cuda"`.
         `compile` (`bool`): if True, HuggingFace model will be compiled with `torch.compile`. Default is `False`.
     
     Returns:
@@ -163,16 +161,18 @@ def hs_eval(
     """
     torch.set_float32_matmul_precision('high') # use tf32
 
-    using_model = False     # to flag method for getting logits
+    using_model = False     # flag method for getting logits from GPT_124M model only 
     if model is None:       # use HuggingFace model if None
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")   # get available device if using HuggingFace model
         model = GPT2LMHeadModel.from_pretrained(model_type).to(device)
+        model = torch.compile(model) if compile else model      # compile HuggingFace model if specified
         print(f"using HuggingFace model: {model_type}...\n")
     else:
         using_model = True
-        model.to(device)                                        # HuggingFace model to specified device
-        model = torch.compile(model) if compile else model      # whether to compile HuggingFace model (only)
+        device = next(model.parameters()).device              # get the device that the specified model is already on
+        model.to(device)                                       
+    
     model.eval()    # set model to evaluation mode
-
     pbar = tqdmHS(
         iterable=data_loader,
         desc=f"correct: 0/0",
@@ -182,12 +182,20 @@ def hs_eval(
     total, correct = 0, 0
     for i, (tokens, mask, label) in enumerate(pbar):
         T, M = tokens.to(device), mask.to(device)
+        
         # get all logits from forward pass
-        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        if device.type == "cuda":                   # optional: can use enabled=(device.type == "cuda") in context manager for brevity
+            with torch.autocast(device.type, dtype=torch.bfloat16):
+                if using_model:
+                    logits, _ = model(T)            # get logits from GPT_124M() (see from model.py)
+                else:
+                    logits = model(T).logits        # logits from HuggingFace model
+        else:   
+            # faster inference WITHOUT autocast if using CPU:
             if using_model:
-                logits, _ = model(T)            # get logits from GPT_124M() (see from model.py)
+                logits, _ = model(T)            
             else:
-                logits = model(T).logits        # logits from HuggingFace model
+                logits = model(T).logits
         
         P = logits[:, :-1, :].contiguous()      # remove last prediction (nothing to predict after ending)
         T = T[:, 1:].contiguous()               # remove first token (no previous token to predict it)
