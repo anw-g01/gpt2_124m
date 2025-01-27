@@ -324,4 +324,28 @@ if __name__ == "__main__":
 
     model.sample("It is given that the")    # generate text samples based on an input
 
+    """
+    sampling tokens... 25/25 (100%)
+
+    SEQUENCE: 1:
+    It is given that theraidGreatepermandTool knit Bluecom suedentyinfect crore knit glac sm CN Baton
+    Scout gang Sound Pract casualties Scarlet Cascade Juda
+
+    SEQUENCE: 2:
+    It is given that the specimensNicarb Poly Poly conform088 apples088lein088 surve switching 223Hur
+    goblinSTONSTON Nan Baton normative renamedeper� comparison
+
+    SEQUENCE: 3:
+    It is given that the announce knitGreat Baton Cascade union572bbbb plunged Goku galaxiesitchieLAND
+    hus GleSTON retparsefal Boat homicide uproar SinsT
+
+    SEQUENCE: 4:
+    It is given that the stick societies SUPPORT437deb Ernst Gallup adCHR delicate linemitchierase Im
+    dwelling lengdotormonal renamed Lauindependentents COR Geoffrey picks
+
+    SEQUENCE: 5:
+    It is given that the followerkiditchie ear088 Studies robotsrazen Kejriwal lent436 EFFeperfactor BT
+    agreements BTondcling Studies prim propose asynchronousTAGfal
+    """
+
     
