@@ -245,7 +245,7 @@ def train_gpt2(
                     checkpoint = {      
                         "epoch": epoch + 1, 
                         "iteration": i,
-                        "model_state_dict": raw_model.state_dict(),
+                        "model_state_dict": (model.module if DDP_WORLD_SIZE > 1 else model).state_dict(),
                         # "optimiser_state_dict": optimiser.state_dict(),
                         # "scheduler_state_dict": scheduler.state_dict(),
                     }
