@@ -130,9 +130,15 @@ def display_graphs(
     print(f"\nloading model weights...\n")
     model_checkpoint_dir = os.path.join(checkpoint_dir, "model_checkpoint.pt")      # path to the .pt file holding dictionary of checkpoints file
     checkpoint = torch.load(model_checkpoint_dir)                                   # load the .pt file for dictionary of checkpoints
+    
     # create a new model instance and load the state_dict from the dictionary:
-    model = GPT2_124M(GPT2Config(vocab_size=50304))                                 # create new model instance, must be same config as trained model
-    model.load_state_dict(checkpoint["model_state_dict"])                           # load the model state_dict from the dictionary
+    model = GPT2_124M(GPT2Config(vocab_size=50304))                     # create new model instance, must be same config as trained model
+    state_dict = _filter_state_dict(checkpoint["model_state_dict"])     # filter the state_dict keys to handle DDP model loading
+    
+    model.load_state_dict(state_dict)                           
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")   # set device to GPU if available
+    model = model.to(device)
+
     # generate text samples from the model:
     model.sample("Hello, I'm a")     
 
@@ -167,14 +173,38 @@ def load_model(
     
     # get full path to the .pt file holding dictionary of checkpoints:
     full_path = os.path.join(checkpoint_dir, "model_checkpoint.pt")  
-    checkpoint = torch.load(full_path)      # load the .pt file for dictionary of checkpoints
+    checkpoint = torch.load(full_path)                                  # load the .pt file for dictionary of checkpoints
+    state_dict = _filter_state_dict(checkpoint["model_state_dict"])     # filter the state_dict keys to handle DDP model loading
 
     # create a new model instance and load the state_dict from the dictionary:
     print(f"loading model weights...\n")
-    model = GPT2_124M(GPT2Config(vocab_size=50304))         # create new model instance, must be same config as trained model
-    model.load_state_dict(checkpoint["model_state_dict"])   # load the model state_dict from the checkpoint dictionary
+    model = GPT2_124M(GPT2Config(vocab_size=50304))     # create new model instance, must be same config as trained model
+    model.load_state_dict(state_dict)                   
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")   # set device to GPU (single default 0) if available
+    model = model.to(device)
 
     return model    # return the trained model
+
+
+def _filter_state_dict(state_dict: dict) -> dict:
+    """
+    Helper function to filters the keys in the state dictionary by removing the `"module."` prefix if present.
+    Mainly arising from DDP training where the model is wrapped in `torch.nn.DataParallel`.
+    
+    Shouldn't be required if the raw model (`model.module`) was used for saving the checkpoint.
+
+    Args:
+    --
+        `state_dict` (`dict`): The state dictionary to filter.
+
+    Returns:
+    --
+        `dict`: A new state dictionary with the `"module."` prefix removed from the keys.
+    """
+    if any(key.startswith("module.") for key in state_dict.keys()):
+        state_dict = {key.replace("module.", ""): value for key, value in state_dict.items()}
+    return state_dict
+
 
 if __name__ == "__main__":
 
