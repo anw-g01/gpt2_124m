@@ -15,7 +15,7 @@ from model import GPT2_124M, GPT2Config
 from tqdm_bars import tqdmGPT
 from hellaswag import HellaSwag, hs_eval 
 from fineweb import FineWebEdu
-from shakespeare import Shakespeare
+from shakespeare.shakespeare import Shakespeare
 
 
 def train_gpt2(
@@ -86,7 +86,7 @@ def train_gpt2(
         print(f"\nloading model, optimiser and scheduler...\n")
 
     iters_per_epoch = train_batches_per_epoch       # no. of iterations per epoch (per GPU) - equivalent to no. of training batches
-    total_iterations = iters_per_epoch * EPOCHS     # total no. of complete training batches to process for full training (per GPU)
+    total_iterations = int(iters_per_epoch * EPOCHS)     # total no. of complete training batches to process for full training (per GPU)
 
     model = GPT2_124M(GPT2Config(vocab_size=50304)).to(DEVICE)      # increase vocab size to (2^7 * 3 * 131)
     model = torch.compile(model) if compile else model              # compile model if specified
