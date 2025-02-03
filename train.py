@@ -4,7 +4,6 @@ from torch.utils.data import DataLoader, DistributedSampler
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
-from torch.distributed.optim import ZeroRedundancyOptimizer
 import torch.distributed as dist
 import numpy as np
 import math
@@ -20,19 +19,18 @@ from shakespeare.shakespeare import Shakespeare
 
 def train_gpt2(
         compile: bool = False,
+        eval: bool = True,
         verbose: bool = True,
-        use_zero: bool = False
     ) -> GPT2_124M:
     """
     Parameters:
     --
         `compile` (`bool`): whether to compile the model using `torch.compile()`. Default is `False`.
+        `eval` (`bool`): whether to run HellaSwag evaluation on the validation set. Default is `True`.
         `verbose` (`str`): whether to print validation logs & metrics to the command line every
         `CHECKPOINT_INTVERAL` steps. Default is `True`. This does not have any effect on the custom 
         `tqdmGPT` progress bar which will always be displayed during training by default. Print logs 
         will also always occur to signify the end of an epoch by default.
-        `use_zero` (`str`): whether to use ZeroRedundancyOptimizer (ZeRO) for distributed training. 
-        See source link: https://pytorch.org/tutorials/recipes/zero_redundancy_optimizer.html
     
     Returns:
     --
@@ -48,6 +46,7 @@ def train_gpt2(
     torch.set_float32_matmul_precision("high")    # set global tensor dtype as TensorFloat32 
 
     # ---------- LOAD DATA ---------- # 
+    # train_loader, val_loader = _load_shakespeare(DDP_WORLD_SIZE, DDP_RANK, size="tiny")    # (option to load a shakespeare dataset)
     train_loader, val_loader = _load_fineweb(DDP_WORLD_SIZE, DDP_LOCAL_RANK)        # load training and validation data
     train_iter, val_iter = _cycle(train_loader), _cycle(val_loader)                 # create infinite iterators
     hs_loader = _load_hellaswag(DDP_WORLD_SIZE, DDP_RANK)                           # load HellaSwag 'val' dataloader
@@ -76,34 +75,26 @@ def train_gpt2(
         val_batches_per_epoch = int(math.floor(total_val_mini_batches / (VAL_ACCUM_STEPS * DDP_WORLD_SIZE)))
         print(f"=> {val_batches_per_epoch:,} batches/epoch per GPU")
 
-        print("\n*----------- HELLASWAG EVAL -----------*")
-        hs_examples = len(hs_loader) * DDP_WORLD_SIZE
-        print(f'total examples in "val" set: {hs_examples:,}')
-        print(f"using DistributedSampler with {DDP_WORLD_SIZE} GPU(s)")
-        print(f"=> {len(hs_loader):,} unique examples per GPU")
+        if eval:    # if eval param is enabled
+            print("\n*----------- HELLASWAG EVAL -----------*")
+            hs_examples = len(hs_loader) * DDP_WORLD_SIZE
+            print(f'total examples in "val" set: {hs_examples:,}')
+            print(f"using DistributedSampler with {DDP_WORLD_SIZE} GPU(s)")
+            print(f"=> {len(hs_loader):,} unique examples per GPU")
 
     # ---------- MODEL INSTANCE ---------- #
         print(f"\nloading model, optimiser and scheduler...\n")
 
-    iters_per_epoch = train_batches_per_epoch       # no. of iterations per epoch (per GPU) - equivalent to no. of training batches
-    total_iterations = int(iters_per_epoch * EPOCHS)     # total no. of complete training batches to process for full training (per GPU)
+    iters_per_epoch = train_batches_per_epoch               # no. of iterations per epoch (per GPU) - equivalent to no. of training batches
+    total_iterations = int(iters_per_epoch * EPOCHS)        # total no. of complete training batches to process for full training (per GPU)
 
     model = GPT2_124M(GPT2Config(vocab_size=50304)).to(DEVICE)      # increase vocab size to (2^7 * 3 * 131)
     model = torch.compile(model) if compile else model              # compile model if specified
-    raw_model = model.module if DDP_WORLD_SIZE > 1 else model       # to access the "raw" unwrapped model
     # if using DDP, wrap model in a PyTorch DDP container
     if DDP_WORLD_SIZE > 1:                                          
         model = DDP(model, device_ids=[DDP_LOCAL_RANK])    
-    # configure an optimiser 
-    if use_zero:
-        optimiser = ZeroRedundancyOptimizer(
-            raw_model.configure_optim(WEIGHT_DECAY, MAX_LEARNING_RATE, DEVICE.type).param_groups,
-            optimizer_class=torch.optim.AdamW,      # use AdamW as the base optimizer
-            lr=MAX_LEARNING_RATE,                   
-            weight_decay=WEIGHT_DECAY,               
-        )
-    else:
-        optimiser = model.configure_optim(WEIGHT_DECAY, MAX_LEARNING_RATE, DEVICE.type)
+    # configure an optimiser and scheduler: 
+    optimiser = model.configure_optim(WEIGHT_DECAY, MAX_LEARNING_RATE, DEVICE.type)
     scheduler = CosineAnnealingLR(
         optimizer=optimiser,
         T_max=(total_iterations - WARMUP_STEPS),    # iterations over which decay starts (after linear warmup phase)
@@ -111,8 +102,7 @@ def train_gpt2(
     )
 
     if MASTER_PROCESS:
-        if compile:
-            print(f"compiling model...")
+        print(f"model compiled: {compile}")
         print(f"no. of model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
 
     # ---------- MAIN TRAINING LOOP ---------- # 
@@ -120,9 +110,10 @@ def train_gpt2(
         print(f"\ntraining for {EPOCHS} epoch(s) ({train_batches_per_epoch:,} iterations/epoch per GPU)")
         print(f"total: {total_iterations:,} iterations/GPU (in parallel across {DDP_WORLD_SIZE} GPU(s))")
         n_validations = total_iterations // VAL_INTERVAL        # no. of validation runs (roughly due to epoch-ends)
-        print(f"running validation and HellaSwag eval every {VAL_INTERVAL} iterations (total ~{n_validations:,})")
+        print(f"running validation (and/or HellaSwag eval) every {VAL_INTERVAL} iterations (total ~{n_validations:,})")
         n_checkpoints = n_validations // CHECKPOINT_INTERVAL    # no. of model checkpoints to write
         print(f"writing model checkpoints every {CHECKPOINT_INTERVAL} validation runs (total ~{n_checkpoints:,}) \n")
+        
         # pre-allocate arrays to store training metrics for plotting:
         train_losses = np.zeros(total_iterations)               # store training losses (for plotting)
         val_losses = np.full(total_iterations, np.nan)          # initialise with NaNs due to interval storing
@@ -137,6 +128,7 @@ def train_gpt2(
         n_tokens=(BATCH_SIZE * BLOCK_SIZE),     # custom input: training tokens processed in input batch
         acc_steps=grad_accum_steps,             # custom input: no. of gradient accumulation steps
         disable=(DDP_LOCAL_RANK != 0),          # show progress bar for only the first GPU process (DDP)
+        miniters=1,                             # update progress bar every 'x' iterations, default is 100 for tqdmGPT (see tqdm_bars.py)
     )
 
     for i in pbar:    # pbar acts as a normal iterator when disabled (for non-master GPU processes)
@@ -189,8 +181,9 @@ def train_gpt2(
                         _, loss = model(X_val, y_val)
                     loss /= VAL_ACCUM_STEPS
                     val_loss += loss.detach()           
-            # run HellaSwag evaluation:
-            n_correct, n_total = hs_eval(hs_loader, model)      # evaluate on HellaSwag dataset
+            # run HellaSwag evaluation if eval=True:
+            if eval:
+                n_correct, n_total = hs_eval(hs_loader, model)      # evaluate on HellaSwag dataset
 
         # ----- ALL-REDUCE - DDP COMMUNICATION (FOR LOGGING) ----- #
         if DDP_WORLD_SIZE > 1:      # only if using DDP
@@ -198,7 +191,7 @@ def train_gpt2(
             # (all_reduce places the same final averaged result back on all GPUs)
             dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)   # only for logging (loss.backward() already built-in gradient synchronisation)
             # only synchronise eval metrics on runs where validation is performed: 
-            if (i % VAL_INTERVAL == 0) or (local_i == iters_per_epoch - 1):                 
+            if eval and ( (i % VAL_INTERVAL == 0) or (local_i == iters_per_epoch - 1) ):                 
                 dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)     
                 # sum and then synchronise HellaSwag evaluation counts across all GPUs: 
                 # (using helper function due to non-tensor values)
@@ -218,34 +211,36 @@ def train_gpt2(
                     f"i: {i + 1:5,}/{total_iterations:,} ({i_pct:4.1f}%) -----*\n"  # iterations completed so far
                 )
             # only store eval metrics on runs where validation is performed:
-            if (i % VAL_INTERVAL == 0) or (local_i == iters_per_epoch - 1):             # if validation was performed
-                val_losses[i] = val_loss.item()                                         # store validation loss          
-                hellaswag_scores[i] = n_correct / n_total * 100                         # store HellaSwag accuracy score (in %)
+            if (i % VAL_INTERVAL == 0) or (local_i == iters_per_epoch - 1):                 # if validation was performed
+                val_losses[i] = val_loss.item()                                             # store validation loss          
+                hellaswag_scores[i] = n_correct / n_total * 100 if eval else None           # store HellaSwag accuracy score (in %)
                 # print stats to the command window on validation runs (but not if it's a the end of an epoch):
-                if verbose and not (local_i == iters_per_epoch - 1):                    # DON'T print on epoch end
-                    i_pct = (i + 1) / total_iterations * 100                            # percentage of total iterations so far
-                    t = datetime.timedelta(seconds=int(pbar.format_dict["elapsed"]))    # total elapsed time
-                    pbar.refresh()                                                      # force update the progress bar
-                    pbar.write(                                                         # print to the command window
+                if verbose and not (local_i == iters_per_epoch - 1):                        # DON'T print on epoch end
+                    i_pct = (i + 1) / total_iterations * 100                                # percentage of total iterations so far
+                    t = datetime.timedelta(seconds=int(pbar.format_dict["elapsed"]))        # total elapsed time
+                    pbar.refresh()                                                          # force update the progress bar
+                    hs_log = f"HellaSwag: {hellaswag_scores[i]:.1f}% | " if eval else ""    # only print eval log string if eval=True
+                    pbar.write(                                                             # print to the command window
                         f"epoch {epoch + 1}/{EPOCHS} | "
                         f"i: {i + 1:5,}/{total_iterations:,} ({i_pct:4.1f}%) | "
                         f"train_loss: {train_losses[i]:6.3f} | val_loss: {val_losses[i]:6.3f} | "
-                        f"HellaSwag: {hellaswag_scores[i]:.1f}% | [{t}]"
+                        f"{hs_log}[{t}]"
                     )
                 # --- WRITE MODEL CHECKPOINT TO LOG_DIR --- #
                 # write a model checkpoint every CHECKPOINT_INTERVAL validations (NOT iterations) or end of epochs:
                 if (i % (VAL_INTERVAL * CHECKPOINT_INTERVAL) == 0) or (local_i == iters_per_epoch - 1):
-                    raw_model = model.module if DDP_WORLD_SIZE > 1 else model                   # access the "raw" unwrapped model if DDP
                     # create a sub-directory for each checkpoint inside LOG_DIR:
-                    prefix = "end" if (local_i == iters_per_epoch - 1) else "val"               # "end" prefix for epoch end
-                    filename = _get_checkpoint_filename(prefix, epoch + 1, i, DDP_WORLD_SIZE)   # get a standardised filename
-                    checkpoint_dir = os.path.join(LOG_DIR, filename)                            # create a new checkpoint directory
+                    prefix = "end" if (local_i == iters_per_epoch - 1) else "val"                   # "end" prefix for epoch end
+                    filename = _get_checkpoint_filename(prefix, epoch + 1, i + 1, DDP_WORLD_SIZE)   # get a standardised filename
+                    # create a new checkpoint folder for each checkpoint:
+                    checkpoint_dir = os.path.join(LOG_DIR, filename)     
+                    os.makedirs(checkpoint_dir, exist_ok=True)                                  # create directory if it doesn't exist
                     checkpoint_path = os.path.join(checkpoint_dir, f"model_checkpoint.pt")      # path to save PyTorch model weights
                     # dictionary to store all metrics:
                     checkpoint = {      
                         "epoch": epoch + 1, 
                         "iteration": i,
-                        "model_state_dict": (model.module if DDP_WORLD_SIZE > 1 else model).state_dict(),
+                        "model_state_dict": (model.module if DDP_WORLD_SIZE > 1 else model).state_dict(),   # must use raw model if using DDP
                         # "optimiser_state_dict": optimiser.state_dict(),
                         # "scheduler_state_dict": scheduler.state_dict(),
                     }
@@ -264,7 +259,7 @@ def train_gpt2(
         t = datetime.timedelta(seconds=int(pbar.format_dict["elapsed"]))    # total elapsed time
         print(f"\ntotal elapsed time: {t}")
         avg_iter_per_sec = total_iterations / t.total_seconds()
-        print(f"{avg_iter_per_sec:.1f} batches/s processed ({1/avg_iter_per_sec:.2f} s/batch)")
+        print(f"average: {avg_iter_per_sec:.1f} batches/s processed ({1/avg_iter_per_sec:.2f} s/batch)")
         pbar.close()                                # close the tqdmGPT progress bar
         
     # if using DDP, clean up the process group:
@@ -466,7 +461,7 @@ def _load_hellaswag(ddp_world_size: int, ddp_rank: int, split: str = "val") -> D
     return hs_loader
 
 
-def _load_shakespeare(size: str = "tiny", ddp_world_size: int = 1, ddp_rank: int = 0) -> tuple:
+def _load_shakespeare(ddp_world_size: int = 1, ddp_rank: int = 0, size: str = "tiny") -> tuple:
     """
     Loads training and validation `DataLoader` (PyTorch) iterators for the `Shakespeare()` dataset.
     Supports DDP training with a `DistributedSampler` that splits all available data indicies 
@@ -476,10 +471,10 @@ def _load_shakespeare(size: str = "tiny", ddp_world_size: int = 1, ddp_rank: int
 
     Args:
     --
-        `size` (`str`): size of the dataset to load, either `"tiny"` or `"large"`. Default is `"tiny"`.
         `ddp_world_size` (`int`): total number of processes for Distributed Data Parallel (DDP) training. Default is `1`.
         `ddp_rank` (`int`): rank of the current process for DDP training. Default is `0`.
-    
+        `size` (`str`): size of the dataset to load, either `"tiny"` or `"large"`. Default is `"tiny"`.
+
     Returns:
     --
         `tuple`: A tuple containing the training `DataLoader` and validation `DataLoader`.
