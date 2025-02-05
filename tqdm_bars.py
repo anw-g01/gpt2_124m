@@ -15,7 +15,7 @@ class tqdmGPT(tqdm):
 
     def __init__(self, *args, acc_steps: int, n_tokens: int, **kwargs):
         bar_format_str = (
-            "[{bar:15}] {percentage:.1f}% | batch: {n_fmt}/{total_fmt} | "
+            "|{bar:15}| {percentage:.1f}% | step: {n_fmt}/{total_fmt} | "
             "{tok/s} | {s/batch} "
             "[{elapsed}<{remaining}, {batches/s}]"
         )
@@ -39,12 +39,12 @@ class tqdmGPT(tqdm):
         if d["rate"]:               # if rate exists (avoid division by zero)
             tpb = 1 / d["rate"]     # time per batch
             if tpb < 1:             # if less than a second
-                d["s/batch"] = f"{tpb * 1e3:.1f} ms/batch"          # milliseconds per step (batch)
+                d["s/batch"] = f"{tpb * 1e3:.1f} ms/step"          # milliseconds per step (batch)
             else:
-                d["s/batch"] = f"{tpb:.2f} s/batch"                 # in milliseconds if faster
-            d["batches/s"] = f"{d['rate']:,.2f} batch/s"            # batches per second (forward + backward passes)
+                d["s/batch"] = f"{tpb:.2f} s/step"                 # in milliseconds if faster
+            d["batches/s"] = f"{d['rate']:,.2f} steps/s"            # batches per second (forward + backward passes)
         else:
-            d["s/batch"], d["ms/iter"], d["batches/s"] = "? s/batch", "? ms/iter", "? batches/s"
+            d["s/batch"], d["batches/s"] = "? s/step", "? steps/s"
         # calculate training tokens processed per second:
         if d["elapsed"]:
             token_rate = (self.steps * self.n_tokens * self.n) / d["elapsed"]       # self.n keeps track of current iteration (from PARENT tqdm class)
@@ -119,46 +119,8 @@ class tqdmHS(tqdm):
     
 
 def test_tqdmGPT():
-    """
-    Example usage of `tqdmGPT()` with a dummy training loop.
-
-    Example progress bar output (all within a single line):
-
-    `[████-----------] 27.6% | batch: 1,021/3,705 | 2.68M tok/s | 18.2 ms/batch [00:17<00:48, 55.06 batch/s]`
-    `[███████--------] 51.6% | batch: 1,912/3,705 | 2.71M tok/s | 17.8 ms/batch [00:32<00:31, 56.13 batch/s]`
-    `[██████████-----] 72.7% | batch: 2,692/3,705 | 2.71M tok/s | 15.9 ms/batch [00:45<00:16, 63.04 batch/s]`
-    `[██████████████-] 94.9% | batch: 3,515/3,705 | 2.71M tok/s | 16.3 ms/batch [00:59<00:03, 61.31 batch/s]`
-
-    Example printing logs:
-
-    ```
-    training for 3 epochs (1,235 iterations/epoch)
-    total: 3705 iterations
-
-    epoch 1/3 | i:     1/3,705 ( 0.0%) | train_loss: 12.000 | val_loss: 14.000 | HellaSwag: 34.0% | [0:00:00]
-    epoch 1/3 | i:   398/3,705 (10.7%) | train_loss: 10.698 | val_loss: 12.897 | HellaSwag: 35.6% | [0:00:06]
-    epoch 1/3 | i:   795/3,705 (21.5%) | train_loss:  9.397 | val_loss: 11.794 | HellaSwag: 37.2% | [0:00:13]
-    epoch 1/3 | i: 1,192/3,705 (32.2%) | train_loss:  8.095 | val_loss: 10.692 | HellaSwag: 38.8% | [0:00:20]
-
-    *----- EPOCH 1/3 COMPLETE | i: 1,235/3,705 (33.3%) -----*
-
-    epoch 2/3 | i: 1,589/3,705 (42.9%) | train_loss:  6.793 | val_loss:  9.589 | HellaSwag: 40.5% | [0:00:27]
-    epoch 2/3 | i: 1,986/3,705 (53.6%) | train_loss:  5.492 | val_loss:  8.486 | HellaSwag: 42.1% | [0:00:33]
-    epoch 2/3 | i: 2,383/3,705 (64.3%) | train_loss:  4.190 | val_loss:  7.383 | HellaSwag: 43.7% | [0:00:40]
-
-    *----- EPOCH 2/3 COMPLETE | i: 2,470/3,705 (66.7%) -----*
-
-    epoch 3/3 | i: 2,780/3,705 (75.0%) | train_loss:  2.889 | val_loss:  6.281 | HellaSwag: 45.3% | [0:00:47]
-    epoch 3/3 | i: 3,177/3,705 (85.7%) | train_loss:  1.587 | val_loss:  5.178 | HellaSwag: 46.9% | [0:00:54]
-    epoch 3/3 | i: 3,574/3,705 (96.5%) | train_loss:  0.285 | val_loss:  4.075 | HellaSwag: 48.5% | [0:01:00]
-
-    *----- EPOCH 3/3 COMPLETE | i: 3,705/3,705 (100.0%) -----*
-
-    [███████████████] 100.0% | batch: 3,705/3,705 | 3.72M tok/s | ? s/batch [00:46<00:00, ? batches/s]
-
-    *----- TRAINING COMPLETE -----*
-    ```
-    """
+    """Example usage of `tqdmGPT()` with a dummy training loop."""
+    
     iters_per_epoch, epochs = 1235, 3
     total_iterations = epochs * iters_per_epoch
     print(f"\ntraining for {epochs} epochs ({iters_per_epoch:,} iterations/epoch)")
@@ -218,3 +180,41 @@ def test_tqdmGPT():
 
 if __name__ == "__main__":
     test_tqdmGPT()
+
+    """
+    Example progress bar output (all within a single line):
+
+    `|████-----------| 27.6% | step: 1,021/3,705 | 2.68M tok/s | 18.2 ms/step [00:17<00:48, 55.06 steps/s]`
+    `|███████--------| 51.6% | step: 1,912/3,705 | 2.71M tok/s | 17.8 ms/step [00:32<00:31, 56.13 steps/s]`
+    `|██████████-----| 72.7% | step: 2,692/3,705 | 2.71M tok/s | 15.9 ms/step [00:45<00:16, 63.04 steps/s]`
+    `|██████████████-| 94.9% | step: 3,515/3,705 | 2.71M tok/s | 16.3 ms/step [00:59<00:03, 61.31 steps/s]`
+
+    Example printing logs:
+
+    ```
+    training for 3 epochs (1,235 iterations/epoch)
+    total: 3705 iterations
+
+    epoch 1/3 | i:     1/3,705 ( 0.0%) | train_loss: 12.000 | val_loss: 14.000 | HellaSwag: 34.0% | [0:00:00]
+    epoch 1/3 | i:   398/3,705 (10.7%) | train_loss: 10.698 | val_loss: 12.897 | HellaSwag: 35.6% | [0:00:06]
+    epoch 1/3 | i:   795/3,705 (21.5%) | train_loss:  9.397 | val_loss: 11.794 | HellaSwag: 37.2% | [0:00:13]
+    epoch 1/3 | i: 1,192/3,705 (32.2%) | train_loss:  8.095 | val_loss: 10.692 | HellaSwag: 38.8% | [0:00:20]
+
+    *----- EPOCH 1/3 COMPLETE | i: 1,235/3,705 (33.3%) -----*
+
+    epoch 2/3 | i: 1,589/3,705 (42.9%) | train_loss:  6.793 | val_loss:  9.589 | HellaSwag: 40.5% | [0:00:27]
+    epoch 2/3 | i: 1,986/3,705 (53.6%) | train_loss:  5.492 | val_loss:  8.486 | HellaSwag: 42.1% | [0:00:33]
+    epoch 2/3 | i: 2,383/3,705 (64.3%) | train_loss:  4.190 | val_loss:  7.383 | HellaSwag: 43.7% | [0:00:40]
+
+    *----- EPOCH 2/3 COMPLETE | i: 2,470/3,705 (66.7%) -----*
+
+    epoch 3/3 | i: 2,780/3,705 (75.0%) | train_loss:  2.889 | val_loss:  6.281 | HellaSwag: 45.3% | [0:00:47]
+    epoch 3/3 | i: 3,177/3,705 (85.7%) | train_loss:  1.587 | val_loss:  5.178 | HellaSwag: 46.9% | [0:00:54]
+    epoch 3/3 | i: 3,574/3,705 (96.5%) | train_loss:  0.285 | val_loss:  4.075 | HellaSwag: 48.5% | [0:01:00]
+
+    *----- EPOCH 3/3 COMPLETE | i: 3,705/3,705 (100.0%) -----*
+
+    |███████████████| 100.0% | step: 3,705/3,705 | 3.72M tok/s | ? s/batch [00:46<00:00, ? steps/s]
+
+    *----- TRAINING COMPLETE -----*
+    """
