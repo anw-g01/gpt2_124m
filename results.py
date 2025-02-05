@@ -250,10 +250,10 @@ def load_model(
 
 def _filter_state_dict(state_dict: dict) -> dict:
     """
-    Helper function to filters the keys in the state dictionary by removing the `"module."` prefix if present.
-    Mainly arising from DDP training where the model is wrapped in `torch.nn.DataParallel`.
-    
-    Shouldn't be required if the raw model (`model.module`) was used for saving the checkpoint.
+    Helper function to filters the keys in the state dictionary by removing the `"module."` prefix (due to 
+    `DDP`) or `"_orig_mod."` (due to `torch.compile`) if either are present.
+
+    N.B. `"module."` won't be present if the raw model (`model.module`) was used for saving the checkpoint.
 
     Args:
     --
@@ -263,9 +263,15 @@ def _filter_state_dict(state_dict: dict) -> dict:
     --
         `dict`: A new state dictionary with the `"module."` prefix removed from the keys.
     """
+    # remove "module." prefix if present (due to DDP)
     if any(key.startswith("module.") for key in state_dict.keys()):
         state_dict = {key.replace("module.", ""): value for key, value in state_dict.items()}
-    return state_dict
+
+    # remove "_orig_mod." prefix if present (due to torch.compile)
+    if any(key.startswith("_orig_mod.") for key in state_dict.keys()):
+        state_dict = {key.replace("_orig_mod.", ""): value for key, value in state_dict.items()}
+
+    return state_dict    # return the filtered state dictionary
 
 
 if __name__ == "__main__":
@@ -275,9 +281,8 @@ if __name__ == "__main__":
     # select a checkpoint file to display after training:
     display_graphs(
         used_gpus=1,
-        epoch_num=1,
-        iter_num=40,
-        checkpoint_type="val",
+        epoch_num=8,
+        iter_num=18850,
     )
 
     # # --- LOAD MODEL + GENERATE SAMPLES --- #
@@ -285,9 +290,8 @@ if __name__ == "__main__":
     # # separately load a trained model from a checkpoint:
     model = load_model(
         used_gpus=1,
-        epoch_num=1,
-        iter_num=40,
-        checkpoint_type="val"
+        epoch_num=8,
+        iter_num=18850,
     )
 
     # # generate text samples from the model:
