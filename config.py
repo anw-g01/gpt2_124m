@@ -1,7 +1,8 @@
 # ----- GLOBAL VARIABLES ----- #
 
-DATA_ROOT           = r"fineweb-edu-sample-10BT"   # directory where FineWeb-Edu shards are stored
-LOG_DIR             = r"gpt2_training_checkpoints"                          # directory to write model checkpoints during training
+FILESYSTEM_DIR      = r"/home/ubuntu/filesystem-gpt2"                    # path to filesystem directory (if using with cloud instance)
+DATA_ROOT           = f"{FILESYSTEM_DIR}/fineweb-edu-sample-10BT"        # directory where FineWeb-Edu shards are stored
+LOG_DIR             = f"{FILESYSTEM_DIR}/gpt2_training_checkpoints"      # directory to write model checkpoints during training
 
 TOKENS_PER_BATCH    = 2 ** 19       # 2^19 = 524,288 
 BATCH_SIZE          = 64            # mini-batch size (samples per forward pass)
