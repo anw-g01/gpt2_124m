@@ -66,7 +66,7 @@ def train_gpt2(
         print(f"=> {train_batches_per_epoch:,} batches/epoch per GPU")     
 
         print("\n*------------- VALIDATION -------------*")
-        print(f"using {VAL_ACCUM_STEPS} accumulation steps per GPU ")
+        print(f"running {VAL_ACCUM_STEPS} accumulation steps per GPU ")
         print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}]")
         val_effective_batch = BATCH_SIZE * BLOCK_SIZE * VAL_ACCUM_STEPS * DDP_WORLD_SIZE
         print(f"=> effective batch: {val_effective_batch:,} tokens")
@@ -85,8 +85,8 @@ def train_gpt2(
     # ---------- MODEL INSTANCE ---------- #
         print(f"\nloading model, optimiser and scheduler...\n")
 
-    iters_per_epoch = train_batches_per_epoch               # no. of iterations per epoch (per GPU) - equivalent to no. of training batches
-    total_iterations = int(iters_per_epoch * EPOCHS)        # total no. of complete training batches to process for full training (per GPU)
+    steps_per_epoch = train_batches_per_epoch          # no. of steps (batches) per epoch (per GPU) - equivalent to no. of training batches
+    total_steps = int(steps_per_epoch * EPOCHS)        # total no. of complete training batches to process for full training (per GPU)
 
     model = GPT2_124M(GPT2Config(vocab_size=50304)).to(DEVICE)      # increase vocab size to (2^7 * 3 * 131)
     model = torch.compile(model) if compile else model              # compile model if specified
@@ -97,34 +97,34 @@ def train_gpt2(
     optimiser = model.configure_optim(WEIGHT_DECAY, MAX_LEARNING_RATE, DEVICE.type)
     scheduler = CosineAnnealingLR(
         optimizer=optimiser,
-        T_max=(total_iterations - WARMUP_STEPS),    # iterations over which decay starts (after linear warmup phase)
-        eta_min=0.1*MAX_LEARNING_RATE               # set minimum learning rate to 10% of the maximum
+        T_max=(total_steps - WARMUP_STEPS),     # iteration steps over which decay starts (after linear warmup phase)
+        eta_min=0.1*MAX_LEARNING_RATE           # set minimum learning rate to 10% of the maximum
     )
 
     if MASTER_PROCESS:
-        print(f"model compiled: {compile}")
+        print(f"compiling model: {compile.upper()}")
         print(f"no. of model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
 
     # ---------- MAIN TRAINING LOOP ---------- # 
 
         print(f"\ntraining for {EPOCHS} epoch(s) ({train_batches_per_epoch:,} iterations/epoch per GPU)")
-        print(f"total: {total_iterations:,} iterations/GPU (in parallel across {DDP_WORLD_SIZE} GPU(s))")
-        n_validations = total_iterations // VAL_INTERVAL        # no. of validation runs (roughly due to epoch-ends)
+        print(f"total: {total_steps:,} steps/GPU (in parallel across {DDP_WORLD_SIZE} GPU(s))")
+        n_validations = total_steps // VAL_INTERVAL        # no. of validation runs (roughly due to epoch-ends)
         print(f"running validation (and/or HellaSwag eval) every {VAL_INTERVAL} iterations (total ~{n_validations:,})")
         n_checkpoints = n_validations // CHECKPOINT_INTERVAL    # no. of model checkpoints to write
         print(f"writing model checkpoints every {CHECKPOINT_INTERVAL} validation runs (total ~{n_checkpoints:,}) \n")
         
         # pre-allocate arrays to store training metrics for plotting:
-        train_losses = np.zeros(total_iterations)               # store training losses (for plotting)
-        val_losses = np.full(total_iterations, np.nan)          # initialise with NaNs due to interval storing
-        hellaswag_scores = np.full(total_iterations, np.nan)    # store HellaSwag scores (interval storage)
-        learning_rates = np.zeros(total_iterations)             # store learning rates (optional plotting)
+        train_losses = np.zeros(total_steps)               # store training losses (for plotting)
+        val_losses = np.full(total_steps, np.nan)          # initialise with NaNs due to interval storing
+        hellaswag_scores = np.full(total_steps, np.nan)    # store HellaSwag scores (interval storage)
+        learning_rates = np.zeros(total_steps)             # store learning rates (optional plotting)
         # create a log directory to store model checkpoints:
         os.makedirs(LOG_DIR, exist_ok=True)                     # create directory if it doesn't exist
 
     # create a custom tqdm bar for printing/logging stats (see tqdm_bars.py):
     pbar = tqdmGPT(     
-        iterable=range(total_iterations),
+        iterable=range(total_steps),
         n_tokens=(BATCH_SIZE * BLOCK_SIZE),     # custom input: training tokens processed in input batch
         acc_steps=grad_accum_steps,             # custom input: no. of gradient accumulation steps
         disable=(DDP_LOCAL_RANK != 0),          # show progress bar for only the first GPU process (DDP)
@@ -133,14 +133,14 @@ def train_gpt2(
 
     for i in pbar:    # pbar acts as a normal iterator when disabled (for non-master GPU processes)
 
-        epoch = i // iters_per_epoch    # current epoch number
-        local_i = i % iters_per_epoch   # current iteration within the current epoch
+        epoch = i // steps_per_epoch    # current epoch number
+        local_i = i % steps_per_epoch   # current iteration within the current epoch
 
         # ----- TRAINING - GRADIENT ACCUMULATION ----- #
         model.train()
         optimiser.zero_grad()                                                       # reset gradients
         train_loss = 0                                                              # accumulated train loss
-        for micro_step in range(grad_accum_steps):
+        for j in range(grad_accum_steps):
             X, y = next(train_iter)                                                 # get next training mini-batch
             X_train, y_train = X.to(DEVICE), y.to(DEVICE)                           # move to GPU
             with torch.autocast(device_type=DEVICE.type, dtype=torch.bfloat16):     # mixed precision (use bfloat16)
@@ -149,7 +149,7 @@ def train_gpt2(
             train_loss += loss.detach()         # accumulate as single-value tensor (only for logging after performing all_reduce)
             # accumulate gradients:
             if DDP_WORLD_SIZE > 1:                                                  # could also use "contextlib.nullcontext()"
-                if micro_step == grad_accum_steps - 1:
+                if j == grad_accum_steps - 1:
                     loss.backward()             # synchronise gradients across all GPUs in the final accumulation step
                 else:
                     with model.no_sync():       # context manager: accumulate gradients without synchronisation 
@@ -170,7 +170,7 @@ def train_gpt2(
 
         # ----- GET VALIDATION LOSS + HELLASWAG EVALUATION ----- #
         # run validation every VAL_INTERVAL iterations OR in the final iteration of each epoch:
-        if (i % VAL_INTERVAL == 0) or (local_i == iters_per_epoch - 1): 
+        if (i % VAL_INTERVAL == 0) or (local_i == steps_per_epoch - 1): 
             model.eval()
             val_loss = 0
             with torch.no_grad():
@@ -191,7 +191,7 @@ def train_gpt2(
             # (all_reduce places the same final averaged result back on all GPUs)
             dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)   # only for logging (loss.backward() already built-in gradient synchronisation)
             # only synchronise eval metrics on runs where validation is performed: 
-            if eval and ( (i % VAL_INTERVAL == 0) or (local_i == iters_per_epoch - 1) ):                 
+            if eval and ( (i % VAL_INTERVAL == 0) or (local_i == steps_per_epoch - 1) ):                 
                 dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)     
                 # sum and then synchronise HellaSwag evaluation counts across all GPUs: 
                 # (using helper function due to non-tensor values)
@@ -203,34 +203,34 @@ def train_gpt2(
             train_losses[i] = train_loss.item()     # store training loss
             learning_rates[i] = lr                  # store learning rate
             # if at the end of an epoch, print a new line message to the command window
-            if local_i == iters_per_epoch - 1:                                  # end of an epoch     
-                i_pct = (i + 1) / total_iterations * 100                        # percentage of total iterations so far
+            if local_i == steps_per_epoch - 1:                                  # end of an epoch     
+                i_pct = (i + 1) / total_steps * 100                        # percentage of total iterations so far
                 pbar.refresh()    # force update the progress bar
                 pbar.write(
                     f"\n*----- EPOCH {epoch + 1}/{EPOCHS} COMPLETE | "            # no. of epochs completed so far
-                    f"i: {i + 1:5,}/{total_iterations:,} ({i_pct:4.1f}%) -----*\n"  # iterations completed so far
+                    f"i: {i + 1:5,}/{total_steps:,} ({i_pct:4.1f}%) -----*\n"  # iterations completed so far
                 )
             # only store eval metrics on runs where validation is performed:
-            if (i % VAL_INTERVAL == 0) or (local_i == iters_per_epoch - 1):                 # if validation was performed
+            if (i % VAL_INTERVAL == 0) or (local_i == steps_per_epoch - 1):                 # if validation was performed
                 val_losses[i] = val_loss.item()                                             # store validation loss          
                 hellaswag_scores[i] = n_correct / n_total * 100 if eval else None           # store HellaSwag accuracy score (in %)
                 # print stats to the command window on validation runs (but not if it's a the end of an epoch):
-                if verbose and not (local_i == iters_per_epoch - 1):                        # DON'T print on epoch end
-                    i_pct = (i + 1) / total_iterations * 100                                # percentage of total iterations so far
+                if verbose and not (local_i == steps_per_epoch - 1):                        # DON'T print on epoch end
+                    i_pct = (i + 1) / total_steps * 100                                # percentage of total iterations so far
                     t = datetime.timedelta(seconds=int(pbar.format_dict["elapsed"]))        # total elapsed time
                     pbar.refresh()                                                          # force update the progress bar
                     hs_log = f"HellaSwag: {hellaswag_scores[i]:.1f}% | " if eval else ""    # only print eval log string if eval=True
                     pbar.write(                                                             # print to the command window
                         f"epoch {epoch + 1}/{EPOCHS} | "
-                        f"i: {i + 1:5,}/{total_iterations:,} ({i_pct:4.1f}%) | "
+                        f"i: {i + 1:5,}/{total_steps:,} ({i_pct:4.1f}%) | "
                         f"train_loss: {train_losses[i]:6.3f} | val_loss: {val_losses[i]:6.3f} | "
                         f"{hs_log}[{t}]"
                     )
                 # --- WRITE MODEL CHECKPOINT TO LOG_DIR --- #
                 # write a model checkpoint every CHECKPOINT_INTERVAL validations (NOT iterations) or end of epochs:
-                if (i % (VAL_INTERVAL * CHECKPOINT_INTERVAL) == 0) or (local_i == iters_per_epoch - 1):
+                if (i % (VAL_INTERVAL * CHECKPOINT_INTERVAL) == 0) or (local_i == steps_per_epoch - 1):
                     # create a sub-directory for each checkpoint inside LOG_DIR:
-                    prefix = "end" if (local_i == iters_per_epoch - 1) else "val"                   # "end" prefix for epoch end
+                    prefix = "end" if (local_i == steps_per_epoch - 1) else "val"                   # "end" prefix for epoch end
                     filename = _get_checkpoint_filename(prefix, epoch + 1, i + 1, DDP_WORLD_SIZE)   # get a standardised filename
                     # create a new checkpoint folder for each checkpoint:
                     checkpoint_dir = os.path.join(LOG_DIR, filename)     
@@ -258,8 +258,8 @@ def train_gpt2(
         # additional stats:
         t = datetime.timedelta(seconds=int(pbar.format_dict["elapsed"]))    # total elapsed time
         print(f"\ntotal elapsed time: {t}")
-        avg_iter_per_sec = total_iterations / t.total_seconds()
-        print(f"average: {avg_iter_per_sec:.1f} batches/s processed ({1/avg_iter_per_sec:.2f} s/batch)")
+        avg_iter_per_sec = total_steps / t.total_seconds()
+        print(f"average: {avg_iter_per_sec:.1f} batches/s processed ({1/avg_iter_per_sec:.2f} s/batch)")    # one step = one batch
         pbar.close()                                # close the tqdmGPT progress bar
         
     # if using DDP, clean up the process group:
