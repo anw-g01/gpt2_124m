@@ -38,7 +38,7 @@ def train_gpt2(
     """
 
     # get distributed parameters from environment variables (if using DDP)
-    DDP_RANK, DDP_LOCAL_RANK, DDP_WORLD_SIZE, DEVICE, MASTER_PROCESS = _initialise_ddp()
+    RANK, LOCAL_RANK, WORLD_SIZE, DEVICE, MASTER_PROCESS = _setup_ddp()
 
     torch.manual_seed(2001)    # for consistent intantiations of models across all processes
     if torch.cuda.is_available():
@@ -46,40 +46,40 @@ def train_gpt2(
     torch.set_float32_matmul_precision("high")    # set global tensor dtype as TensorFloat32 
 
     # ---------- LOAD DATA ---------- # 
-    # train_loader, val_loader = _load_shakespeare(DDP_WORLD_SIZE, DDP_RANK, size="tiny")    # (option to load a shakespeare dataset)
-    train_loader, val_loader = _load_fineweb(DDP_WORLD_SIZE, DDP_LOCAL_RANK)        # load training and validation data
-    train_iter, val_iter = _cycle(train_loader), _cycle(val_loader)                 # create infinite iterators
-    hs_loader = _load_hellaswag(DDP_WORLD_SIZE, DDP_RANK)                           # load HellaSwag 'val' dataloader
+    # train_loader, val_loader = _load_shakespeare(WORLD_SIZE, RANK, size="tiny")    # (option to load a shakespeare dataset)
+    train_loader, val_loader = _load_fineweb(WORLD_SIZE, RANK)          # load training and validation data
+    train_iter, val_iter = _cycle(train_loader), _cycle(val_loader)     # create infinite iterators
+    hs_loader = _load_hellaswag(WORLD_SIZE, RANK)                       # load HellaSwag dataloader for evaluation
 
     if MASTER_PROCESS:    # only GPU rank 0 prints to the command window
         print("\n*-------------- TRAINING --------------*")
         print(f"effective batch: {TOKENS_PER_BATCH:,} tokens")
         tok_per_gpu = BATCH_SIZE * BLOCK_SIZE    # training tokens processed per GPU per mini-batch
-        grad_accum_steps = int(TOKENS_PER_BATCH // (tok_per_gpu * DDP_WORLD_SIZE))      
+        grad_accum_steps = int(TOKENS_PER_BATCH // (tok_per_gpu * WORLD_SIZE))      
         print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}]")
-        total_train_mini_batches = len(train_loader) * DDP_WORLD_SIZE    # total mini-batches in ONE EPOCH overall
+        total_train_mini_batches = len(train_loader) * WORLD_SIZE    # total mini-batches in ONE EPOCH overall
         print(f"no. of mini-batches: {total_train_mini_batches:,} ({len(train_loader):,} per GPU)")
         # calculate no. of COMPLETE training batches (not mini-batches):
         # using floor because remaining mini-batches wouldn't complete a full batch:
         print(f"using {grad_accum_steps} accumulation step(s) per GPU")
-        train_batches_per_epoch = int(math.floor(total_train_mini_batches / (grad_accum_steps * DDP_WORLD_SIZE)))    
+        train_batches_per_epoch = int(math.floor(total_train_mini_batches / (grad_accum_steps * WORLD_SIZE)))    
         print(f"=> {train_batches_per_epoch:,} batches/epoch per GPU")     
 
         print("\n*------------- VALIDATION -------------*")
         print(f"running {VAL_ACCUM_STEPS} accumulation steps per GPU ")
         print(f"mini-batch size: [{BATCH_SIZE}, {BLOCK_SIZE}]")
-        val_effective_batch = BATCH_SIZE * BLOCK_SIZE * VAL_ACCUM_STEPS * DDP_WORLD_SIZE
+        val_effective_batch = BATCH_SIZE * BLOCK_SIZE * VAL_ACCUM_STEPS * WORLD_SIZE
         print(f"=> effective batch: {val_effective_batch:,} tokens")
-        total_val_mini_batches = len(val_loader) * DDP_WORLD_SIZE
+        total_val_mini_batches = len(val_loader) * WORLD_SIZE
         print(f"no. of mini-batches: {total_val_mini_batches:,} ({len(val_loader):,} per GPU)")
-        val_batches_per_epoch = int(math.floor(total_val_mini_batches / (VAL_ACCUM_STEPS * DDP_WORLD_SIZE)))
+        val_batches_per_epoch = int(math.floor(total_val_mini_batches / (VAL_ACCUM_STEPS * WORLD_SIZE)))
         print(f"=> {val_batches_per_epoch:,} batches/epoch per GPU")
 
         if eval:    # if eval param is enabled
             print("\n*----------- HELLASWAG EVAL -----------*")
-            hs_examples = len(hs_loader) * DDP_WORLD_SIZE
+            hs_examples = len(hs_loader) * WORLD_SIZE
             print(f'total examples in "val" set: {hs_examples:,}')
-            print(f"using DistributedSampler with {DDP_WORLD_SIZE} GPU(s)")
+            print(f"using DistributedSampler with {WORLD_SIZE} GPU(s)")
             print(f"=> {len(hs_loader):,} unique examples per GPU")
 
     # ---------- MODEL INSTANCE ---------- #
@@ -91,8 +91,8 @@ def train_gpt2(
     model = GPT2_124M(GPT2Config(vocab_size=50304)).to(DEVICE)      # increase vocab size to (2^7 * 3 * 131)
     model = torch.compile(model) if compile else model              # compile model if specified
     # if using DDP, wrap model in a PyTorch DDP container
-    if DDP_WORLD_SIZE > 1:                                          
-        model = DDP(model, device_ids=[DDP_LOCAL_RANK])    
+    if WORLD_SIZE > 1:                                          
+        model = DDP(model, device_ids=[LOCAL_RANK])    
     # configure an optimiser and scheduler: 
     optimiser = model.configure_optim(WEIGHT_DECAY, MAX_LEARNING_RATE, DEVICE.type)
     scheduler = CosineAnnealingLR(
@@ -108,7 +108,7 @@ def train_gpt2(
     # ---------- MAIN TRAINING LOOP ---------- # 
 
         print(f"\ntraining for {EPOCHS} epoch(s) ({train_batches_per_epoch:,} iterations/epoch per GPU)")
-        print(f"total: {total_steps:,} steps/GPU (in parallel across {DDP_WORLD_SIZE} GPU(s))")
+        print(f"total: {total_steps:,} steps/GPU (in parallel across {WORLD_SIZE} GPU(s))")
         n_validations = total_steps // VAL_INTERVAL        # no. of validation runs (roughly due to epoch-ends)
         print(f"running validation (and/or HellaSwag eval) every {VAL_INTERVAL} iterations (total ~{n_validations:,})")
         n_checkpoints = n_validations // CHECKPOINT_INTERVAL    # no. of model checkpoints to write
@@ -127,7 +127,7 @@ def train_gpt2(
         iterable=range(total_steps),
         n_tokens=(BATCH_SIZE * BLOCK_SIZE),     # custom input: training tokens processed in input batch
         acc_steps=grad_accum_steps,             # custom input: no. of gradient accumulation steps
-        disable=(DDP_LOCAL_RANK != 0),          # show progress bar for only the first GPU process (DDP)
+        disable=(LOCAL_RANK != 0),          # show progress bar for only the first GPU process (DDP)
         miniters=1,                             # update progress bar every 'x' iterations, default is 100 for tqdmGPT (see tqdm_bars.py)
     )
 
@@ -148,7 +148,7 @@ def train_gpt2(
             loss /= grad_accum_steps                                                # scale loss to mimic full total batch average
             train_loss += loss.detach()         # accumulate as single-value tensor (only for logging after performing all_reduce)
             # accumulate gradients:
-            if DDP_WORLD_SIZE > 1:                                                  # could also use "contextlib.nullcontext()"
+            if WORLD_SIZE > 1:                                                  # could also use "contextlib.nullcontext()"
                 if j == grad_accum_steps - 1:
                     loss.backward()             # synchronise gradients across all GPUs in the final accumulation step
                 else:
@@ -186,7 +186,7 @@ def train_gpt2(
                 n_correct, n_total = hs_eval(hs_loader, model)      # evaluate on HellaSwag dataset
 
         # ----- ALL-REDUCE - DDP COMMUNICATION (FOR LOGGING) ----- #
-        if DDP_WORLD_SIZE > 1:      # only if using DDP
+        if WORLD_SIZE > 1:      # only if using DDP
             # average and synchronise single-value loss tensors across all GPUs:
             # (all_reduce places the same final averaged result back on all GPUs)
             dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)   # only for logging (loss.backward() already built-in gradient synchronisation)
@@ -231,7 +231,7 @@ def train_gpt2(
                 if (i % (VAL_INTERVAL * CHECKPOINT_INTERVAL) == 0) or (local_i == steps_per_epoch - 1):
                     # create a sub-directory for each checkpoint inside LOG_DIR:
                     prefix = "end" if (local_i == steps_per_epoch - 1) else "val"                   # "end" prefix for epoch end
-                    filename = _get_checkpoint_filename(prefix, epoch + 1, i + 1, DDP_WORLD_SIZE)   # get a standardised filename
+                    filename = _get_checkpoint_filename(prefix, epoch + 1, i + 1, WORLD_SIZE)   # get a standardised filename
                     # create a new checkpoint folder for each checkpoint:
                     checkpoint_dir = os.path.join(LOG_DIR, filename)     
                     os.makedirs(checkpoint_dir, exist_ok=True)                                  # create directory if it doesn't exist
@@ -240,7 +240,7 @@ def train_gpt2(
                     checkpoint = {      
                         "epoch": epoch + 1, 
                         "iteration": i,
-                        "model_state_dict": (model.module if DDP_WORLD_SIZE > 1 else model).state_dict(),   # must use raw model if using DDP
+                        "model_state_dict": (model.module if WORLD_SIZE > 1 else model).state_dict(),   # must use raw model if using DDP
                         # "optimiser_state_dict": optimiser.state_dict(),
                         # "scheduler_state_dict": scheduler.state_dict(),
                     }
@@ -263,45 +263,76 @@ def train_gpt2(
         pbar.close()                                # close the tqdmGPT progress bar
         
     # if using DDP, clean up the process group:
-    if DDP_WORLD_SIZE > 1:                          
+    if WORLD_SIZE > 1:                          
         destroy_process_group()                     
 
     return model
 
 # ---------- HELPER FUNCTIONS ---------- #
 
-def _initialise_ddp() -> tuple:
+def _setup_ddp() -> tuple:
     """
-    Set up DDP (Distributed Data Parallel) with `torch.distributed` to utilise multi-GPU training.
+    Initialise DDP (Distributed Data Parallel) with `torch.distributed` to utilise multi-GPU training.
     The `torchrun` command will set the `env` variables: `RANK`, `LOCAL_RANK` and `WORLD_SIZE`.
 
     Returns:
     --
     `tuple`: a tuple containing:
-        `ddp_rank` (`int`): global process integer ID (e.g. `0-7` for `8` GPUs).
-        `ddp_local_rank` (`int`): GPU ID on the current node (e.g. `0-7` if all on one machine).
-        `ddp_world_size` (`int`): total number of processes (i.e. number of GPUs).
+        `rank` (`int`): global process integer ID (e.g. `0-7` for `8` GPUs).
+        `local_rank` (`int`): GPU ID on the current node (e.g. `0-7` for `16` GPUs across two nodes with `8` GPUs each).
+        `world_size` (`int`): total number of processes (i.e. number of GPUs).
         `device` (`torch.device`): device to be used for the current process.
         `master_process` (`bool`): flag indicating if the current process is the master process (first GPU).
     """
     # check if running in a distributed environment (e.g. using torchrun):
     using_ddp = all(key in os.environ for key in ["RANK", "LOCAL_RANK", "WORLD_SIZE"])    
     if using_ddp:
-        assert torch.cuda.is_available(), "train.py script cannot be run without CUDA."    # CUDA must be available for DDP
+        assert torch.cuda.is_available(), "train.py cannot be run without CUDA."    # CUDA must be available for DDP
         init_process_group(backend="nccl")                  # initialise the process group
-        ddp_rank = int(os.environ["RANK"])                  # global process integer ID (e.g. 0-7 for 8 GPUs)
-        ddp_local_rank = int(os.environ["LOCAL_RANK"])      # GPU ID on the current node (e.g. 0-7 if all on one machine)
-        ddp_world_size = int(os.environ["WORLD_SIZE"])      # total no. of processes (i.e. no of GPUs)
-        device = f"cuda:{ddp_local_rank}"                   # select appropriated GPU based on integer IDw
-        torch.cuda.set_device(device)                       # set the device for current process 
-        master_process = (ddp_rank == 0)                    # flag for the first GPU (for logging, checkpointing etc.) 
-        print(f"using DDP with WORLD_SIZE: {ddp_world_size}\n")
+        rank = dist.get_rank()                              # global process integer ID
+        local_rank = int(os.environ["LOCAL_RANK"])          # GPU ID on the current node 
+        world_size = dist.get_world_size()                  # total no. of processes
+        device = f"cuda:{local_rank}"                       
+        torch.cuda.set_device(device)                       # set the device for current process on current node
+        master_process = (rank == 0)                        # flag for the first GPU (for logging, checkpointing etc.) 
+        print(f"\nusing DDP with WORLD_SIZE: {world_size}\n")
     else:
-        ddp_rank, ddp_local_rank, ddp_world_size = 0, 0, 1  # fallback for non-DDP setup
+        rank, local_rank, world_size = 0, 0, 1      # fallback for non-DDP setup
         master_process = True
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"\nusing single device: {device}")
-    return ddp_rank, ddp_local_rank, ddp_world_size, device, master_process
+    return rank, local_rank, world_size, device, master_process
+
+
+def _test_ddp() -> None:
+    """
+    Perform a simple test to verify a `DDP` setup.
+    
+    Execute on command prompt:
+        `torchrun --standalone --nproc_per_node=8 train.py`
+
+    N.B. Full training runs are executed with `main.py`, NOT `train.py`.
+    """
+
+    rank, _, world_size, device, master_process = _setup_ddp()
+
+    if world_size == 1:
+        print(f"\ninvalid DDP with {world_size=}, exiting test...")
+        return      # break
+
+    if master_process:
+        print(f"\nrunning DDP test with {world_size=}...")
+        print(f"master process running on {device}\n")
+
+    # create a tensor on each GPU
+    tensor = torch.tensor([1.0], device=device) * (rank + 1)
+    print(f"{rank=} ({device=}) |  INITIAL: {tensor}")
+
+    # perform an all-reduce operation to sum tensors across all GPUs
+    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+    print(f"{rank=} ({device=}) | AFTER ALL-REDUCE: {tensor}")
+
+    dist.destroy_process_group()    # clean up and shut down DDP process
 
 
 def _value_reduce(value: float, device: torch.device) -> float:
@@ -462,6 +493,7 @@ def _load_hellaswag(ddp_world_size: int, ddp_rank: int, split: str = "val") -> D
 
 
 def _load_shakespeare(ddp_world_size: int = 1, ddp_rank: int = 0, size: str = "tiny") -> tuple:
+
     """
     Loads training and validation `DataLoader` (PyTorch) iterators for the `Shakespeare()` dataset.
     Supports DDP training with a `DistributedSampler` that splits all available data indicies 
@@ -507,3 +539,9 @@ def _load_shakespeare(ddp_world_size: int = 1, ddp_rank: int = 0, size: str = "t
         pin_memory=True
     )
     return train_loader, val_loader 
+
+
+if __name__ == "__main__":
+    # verify DDP setup with a simple test
+    # `torchrun --standalone --nproc_per_node=8 train.py`
+    _test_ddp()     
