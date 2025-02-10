@@ -9,14 +9,14 @@ BATCH_SIZE          = 64            # mini-batch size (samples per forward pass)
 BLOCK_SIZE          = 1024          # context (sequence) length
 WEIGHT_DECAY        = 0.1           # applied on specific parameter groups (see model.configure_optim() method)
 
-EPOCHS              = 0.0055        # no. of cycles over the full dataset
-VAL_INTERVAL        = 10            # validation every 'interval' steps
+EPOCHS              = 1             # no. of cycles over the full dataset
+VAL_INTERVAL        = 200           # validation every 'interval' steps
 VAL_ACCUM_STEPS     = 10            # no. of validation mini-batches to run per GPU
-CHECKPOINT_INTERVAL = 2             # write model checkpoints every 'interval' validations
+CHECKPOINT_INTERVAL = 20            # write model checkpoints every 'interval' validations
 
 # learning rate scheduler parameters:
 MAX_LEARNING_RATE   = 2e-3          # maximum learning rate
-WARMUP_STEPS        = 20            # steps over linearly increasing LEARNING_RATE
+WARMUP_STEPS        = 750           # steps over linearly increasing LEARNING_RATE
 
 # for Shakespeare dataset:
 PCT_DATA            = 1             # proportion of full data used (Tiny Shakespeare)
