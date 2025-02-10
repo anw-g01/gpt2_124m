@@ -203,7 +203,13 @@ class GPT2_124M(nn.Module):
             loss = F.cross_entropy(logits.view(-1, logits.shape[-1]), targets.view(-1))
         return logits, loss
 
-    def configure_optim(self, weight_decay: float, learning_rate: float, device_type: str) -> torch.optim.AdamW:
+    def configure_optim(
+            self, 
+            weight_decay: float, 
+            learning_rate: float, 
+            device_type: str,
+            verbose=True,
+        ) -> torch.optim.AdamW:
         """
         Configures and returns an `torch.optim.AdamW()` optimiser with set hyperparameters taken from GPT-3 (125M).
         
@@ -240,9 +246,10 @@ class GPT2_124M(nn.Module):
         n_decay_params = sum(p.numel() for p in decay_params)
         n_no_decay_params = sum(p.numel() for p in no_decay_params)
         pct_decay, pct_no_decay = n_decay_params / n_params * 100, n_no_decay_params / n_params * 100
-        print(f"decay params: {n_decay_params:,} ({pct_decay:.1f}%)")
-        print(f"no-decay params: {n_no_decay_params:,} ({pct_no_decay:.1f}%)")
-        print(f"using fused AdamW: {use_fused} (device={device_type})")
+        if verbose:
+            print(f"decay params: {n_decay_params:,} ({pct_decay:.1f}%)")
+            print(f"no-decay params: {n_no_decay_params:,} ({pct_no_decay:.1f}%)")
+            print(f"using fused AdamW: {use_fused} (device={device_type})")
         return optimiser
     
     def sample(
