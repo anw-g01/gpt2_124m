@@ -9,11 +9,10 @@ class tqdmGPT(tqdm):
     
     Attributes:
     --
-        `n_tokens` (`int`): number of tokens processed per mini-batch.
-        `steps` (`int`): number of gradient accumulation steps.
+        `n_tokens` (`int`): number of tokens processed per step.
     """
 
-    def __init__(self, *args, acc_steps: int, n_tokens: int, **kwargs):
+    def __init__(self, *args, n_tokens: int, **kwargs):
         bar_format_str = (
             "|{bar:15}| {percentage:.1f}% | step: {n_fmt}/{total_fmt} | "
             "{tok/s} | {s/batch} "
@@ -28,7 +27,6 @@ class tqdmGPT(tqdm):
         for key, value in params.items():
             kwargs.setdefault(key, value)
         self.n_tokens = n_tokens                # no. of tokens processed
-        self.steps = acc_steps                  # no. of gradient accumulation steps (to find iterations rate)
         super().__init__(*args, **kwargs)       # pass to constructor of parent class
 
     @property
@@ -47,7 +45,7 @@ class tqdmGPT(tqdm):
             d["s/batch"], d["batches/s"] = "? s/step", "? steps/s"
         # calculate training tokens processed per second:
         if d["elapsed"]:
-            token_rate = (self.steps * self.n_tokens * self.n) / d["elapsed"]       # self.n keeps track of current iteration (from PARENT tqdm class)
+            token_rate = (self.n_tokens * self.n) / d["elapsed"]       # self.n keeps track of current iteration (from PARENT tqdm class)
             if token_rate < 1e6:
                 d["tok/s"] = f"{token_rate:,.0f} tok/s"
             else:
@@ -131,8 +129,7 @@ def test_tqdmGPT():
 
     pbar = tqdmGPT(
             iterable=range(total_iterations),
-            n_tokens=11_561,
-            acc_steps=4,
+            n_tokens=11_561 * 4,
             miniters=1,
     )
 
@@ -150,7 +147,7 @@ def test_tqdmGPT():
             pbar.refresh()    # force update the progress bar
             pbar.write(
                 f"\n*----- EPOCH {epoch + 1}/{epochs} COMPLETE | "            # no. of epochs completed so far
-                f"i: {i + 1:5,}/{total_iterations:,} ({i_pct:4.1f}%) -----*\n"  # iterations completed so far
+                f"step: {i + 1:5,}/{total_iterations:,} ({i_pct:4.1f}%) -----*\n"  # iterations completed so far
             )
 
                 # print stats to the command window on validation runs (but not if it's a the end of an epoch):
@@ -161,7 +158,7 @@ def test_tqdmGPT():
                     pbar.refresh()                                                      # force update the progress bar
                     pbar.write(                                                         # print to the command window
                         f"epoch {epoch + 1}/{epochs} | "
-                        f"i: {i + 1:5,}/{total_iterations:,} ({i_pct:4.1f}%) | "
+                        f"step: {i + 1:5,}/{total_iterations:,} ({i_pct:4.1f}%) | "
                         f"train_loss: {train_loss:6.3f} | val_loss: {val_loss:6.3f} | "
                         f"HellaSwag: {hs_score:.1f}% | [{t}]"
                     )
@@ -195,24 +192,24 @@ if __name__ == "__main__":
     training for 3 epochs (1,235 iterations/epoch)
     total: 3705 iterations
 
-    epoch 1/3 | i:     1/3,705 ( 0.0%) | train_loss: 12.000 | val_loss: 14.000 | HellaSwag: 34.0% | [0:00:00]
-    epoch 1/3 | i:   398/3,705 (10.7%) | train_loss: 10.698 | val_loss: 12.897 | HellaSwag: 35.6% | [0:00:06]
-    epoch 1/3 | i:   795/3,705 (21.5%) | train_loss:  9.397 | val_loss: 11.794 | HellaSwag: 37.2% | [0:00:13]
-    epoch 1/3 | i: 1,192/3,705 (32.2%) | train_loss:  8.095 | val_loss: 10.692 | HellaSwag: 38.8% | [0:00:20]
+    epoch 1/3 | step:     1/3,705 ( 0.0%) | train_loss: 12.000 | val_loss: 14.000 | HellaSwag: 34.0% | [0:00:00]
+    epoch 1/3 | step:   398/3,705 (10.7%) | train_loss: 10.698 | val_loss: 12.897 | HellaSwag: 35.6% | [0:00:06]
+    epoch 1/3 | step:   795/3,705 (21.5%) | train_loss:  9.397 | val_loss: 11.794 | HellaSwag: 37.2% | [0:00:13]
+    epoch 1/3 | step: 1,192/3,705 (32.2%) | train_loss:  8.095 | val_loss: 10.692 | HellaSwag: 38.8% | [0:00:20]
 
-    *----- EPOCH 1/3 COMPLETE | i: 1,235/3,705 (33.3%) -----*
+    *----- EPOCH 1/3 COMPLETE | step: 1,235/3,705 (33.3%) -----*
 
-    epoch 2/3 | i: 1,589/3,705 (42.9%) | train_loss:  6.793 | val_loss:  9.589 | HellaSwag: 40.5% | [0:00:27]
-    epoch 2/3 | i: 1,986/3,705 (53.6%) | train_loss:  5.492 | val_loss:  8.486 | HellaSwag: 42.1% | [0:00:33]
-    epoch 2/3 | i: 2,383/3,705 (64.3%) | train_loss:  4.190 | val_loss:  7.383 | HellaSwag: 43.7% | [0:00:40]
+    epoch 2/3 | step: 1,589/3,705 (42.9%) | train_loss:  6.793 | val_loss:  9.589 | HellaSwag: 40.5% | [0:00:27]
+    epoch 2/3 | step: 1,986/3,705 (53.6%) | train_loss:  5.492 | val_loss:  8.486 | HellaSwag: 42.1% | [0:00:33]
+    epoch 2/3 | step: 2,383/3,705 (64.3%) | train_loss:  4.190 | val_loss:  7.383 | HellaSwag: 43.7% | [0:00:40]
 
-    *----- EPOCH 2/3 COMPLETE | i: 2,470/3,705 (66.7%) -----*
+    *----- EPOCH 2/3 COMPLETE | step: 2,470/3,705 (66.7%) -----*
 
-    epoch 3/3 | i: 2,780/3,705 (75.0%) | train_loss:  2.889 | val_loss:  6.281 | HellaSwag: 45.3% | [0:00:47]
-    epoch 3/3 | i: 3,177/3,705 (85.7%) | train_loss:  1.587 | val_loss:  5.178 | HellaSwag: 46.9% | [0:00:54]
-    epoch 3/3 | i: 3,574/3,705 (96.5%) | train_loss:  0.285 | val_loss:  4.075 | HellaSwag: 48.5% | [0:01:00]
+    epoch 3/3 | step: 2,780/3,705 (75.0%) | train_loss:  2.889 | val_loss:  6.281 | HellaSwag: 45.3% | [0:00:47]
+    epoch 3/3 | step: 3,177/3,705 (85.7%) | train_loss:  1.587 | val_loss:  5.178 | HellaSwag: 46.9% | [0:00:54]
+    epoch 3/3 | step: 3,574/3,705 (96.5%) | train_loss:  0.285 | val_loss:  4.075 | HellaSwag: 48.5% | [0:01:00]
 
-    *----- EPOCH 3/3 COMPLETE | i: 3,705/3,705 (100.0%) -----*
+    *----- EPOCH 3/3 COMPLETE | step: 3,705/3,705 (100.0%) -----*
 
     |███████████████| 100.0% | step: 3,705/3,705 | 3.72M tok/s | ? s/batch [00:46<00:00, ? steps/s]
 
