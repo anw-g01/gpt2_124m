@@ -14,7 +14,7 @@ from model import GPT2_124M, GPT2Config
 def display_graphs(
         used_gpus: int,
         epoch_num: int,
-        iter_num: int,
+        step_num: int,
         truncate: bool = True,
         log_dir: str = LOG_DIR,
         checkpoint_type: str = "end",
@@ -35,7 +35,7 @@ def display_graphs(
     --
         `used_gpus` (`int`): number of GPUs used for training.
         `epoch_num` (`int`): epoch number (starting from `1`) for the checkpoint.
-        `iter_num` (`int`): iteration number (starting from `1`) for the checkpoint.
+        `step_num` (`int`): step number (starting from `1`) for the checkpoint.
         `log_dir` (`str`): directory where the logs and checkpoints are stored. Default: `"LOG_DIR"` from `config.py`.
         `checkpoint_type` (`str`): prefix of the checkpoint file name (must be `"end"` or `"val"`).  Default: `"end"`.
         `plot_lr` (`bool`): whether to plot the learning rate on the same plot as the losses. Default: `"True"`.
@@ -44,8 +44,8 @@ def display_graphs(
     """
     assert checkpoint_type in ["end", "val"], "checkpoint_type must be 'end' or 'val'"
 
-    # get the checkpoint directory from the filename (for the specified epoch and iteration):
-    filename = _get_checkpoint_filename(checkpoint_type, epoch_num, iter_num, used_gpus)
+    # get the checkpoint directory from the filename (for the specified epoch and step number):
+    filename = _get_checkpoint_filename(checkpoint_type, epoch_num, step_num, used_gpus)
     checkpoint_dir = os.path.join(log_dir, filename)
     assert os.path.exists(checkpoint_dir), f"checkpoint directory does not exist: {checkpoint_dir}"     # check if the directory exists
     print(f"\nusing checkpoint directory: {filename}")
@@ -56,10 +56,10 @@ def display_graphs(
     hellaswag_scores = np.load(os.path.join(checkpoint_dir, "hellaswag_scores.npy"))
     learning_rates = np.load(os.path.join(checkpoint_dir, "learning_rates.npy"))      
       
-    # truncate arrays up to iter_idx (default):
+    # truncate arrays up to step_idx (default):
     if truncate:
-        idx = min(iter_num, len(train_losses))      # in case iter_num > len(train_losses) 
-        train_losses = train_losses[:idx]           # works because iter were saved as i + 1 
+        idx = min(step_num, len(train_losses))      # in case step_num > len(train_losses) 
+        train_losses = train_losses[:idx]           # valid because steps were saved as i + 1 
         val_losses = val_losses[:idx]
         hellaswag_scores = hellaswag_scores[:idx]
         learning_rates = learning_rates[:idx]
@@ -190,8 +190,8 @@ def display_graphs(
     )               
     
     # create a new model instance and load the state_dict from the dictionary:
-    model = GPT2_124M(GPT2Config(vocab_size=50304))                     # create new model instance, must be same config as trained model
-    state_dict = _filter_state_dict(checkpoint_dict["model_state_dict"])     # filter the state_dict keys to handle DDP model loading
+    model = GPT2_124M(GPT2Config(vocab_size=50304))                         # create new model instance, must be same config as trained model
+    state_dict = _filter_state_dict(checkpoint_dict["model_state_dict"])    # filter the state_dict keys to handle DDP model loading
     
     model.load_state_dict(state_dict)                           
     model = model.to(device)
@@ -203,7 +203,7 @@ def display_graphs(
 def load_model(
         used_gpus: int,
         epoch_num: int,
-        iter_num: int,
+        step_num: int,
         log_dir: str = LOG_DIR,
         checkpoint_type: str = "end",
     ) -> GPT2_124M:
@@ -214,7 +214,7 @@ def load_model(
     --
         `used_gpus` (`int`): number of GPUs used for training.
         `epoch_num` (`int`): epoch number (starting from `1`) for the checkpoint.
-        `iter_num` (`int`): iteration number (starting from `1`) for the checkpoint.
+        `step_num` (`int`): step number (starting from `1`) for the checkpoint.
         `log_dir` (`str`): directory where the logs and checkpoints are stored.
         `checkpoint_type` (`str`): prefix of the checkpoint file name (must be `"end"` or `"val"`). Default: `"end"`.
 
@@ -222,8 +222,8 @@ def load_model(
     --
         `model` (`GPT2_124M`): GPT-2 model instance with loaded weights from a checkpoint.
     """
-    # get the checkpoint directory from the filename (for the specified epoch and iteration):
-    filename = _get_checkpoint_filename(checkpoint_type, epoch_num, iter_num, used_gpus)
+    # get the checkpoint directory from the filename (for the specified epoch and step):
+    filename = _get_checkpoint_filename(checkpoint_type, epoch_num, step_num, used_gpus)
     checkpoint_dir = os.path.join(log_dir, filename)
     assert os.path.exists(checkpoint_dir), f"checkpoint directory does not exist: {checkpoint_dir}"     # check if the directory exists
     print(f"\nloading model from: {filename}...")
@@ -282,7 +282,7 @@ if __name__ == "__main__":
     display_graphs(
         used_gpus=1,
         epoch_num=8,
-        iter_num=18850,
+        step_num=18850,
     )
 
     # # --- LOAD MODEL + GENERATE SAMPLES --- #
@@ -291,7 +291,7 @@ if __name__ == "__main__":
     model = load_model(
         used_gpus=1,
         epoch_num=8,
-        iter_num=18850,
+        step_num=18850,
     )
 
     # # generate text samples from the model:
