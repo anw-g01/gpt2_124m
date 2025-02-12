@@ -234,7 +234,7 @@ class GPT2_124M(nn.Module):
         ]
         # -----
         # available = "fused" in inspect.signature(torch.optim.AdamW).parameters    # if "fused" parameter is available
-        use_fused = True if device_type == "cuda" else False                    
+        use_fused = True if "cuda" in device_type else False                    
         optimiser = torch.optim.AdamW(
             params=optim_groups, lr=learning_rate,
             weight_decay=weight_decay,
