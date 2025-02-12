@@ -24,7 +24,7 @@ def train_gpt2(
     ) -> GPT2_124M:
     """
     Parameters:
-    --
+    ---
         `compile` (`bool`): whether to compile the model using `torch.compile()`. Default is `False`.
         `eval` (`bool`): whether to run HellaSwag evaluation on the validation set. Default is `True`.
         `verbose` (`str`): whether to print validation logs & metrics to the command line every
@@ -33,14 +33,14 @@ def train_gpt2(
         will also always occur to signify the end of an epoch by default.
     
     Returns:
-    --
+    ---
         `model` (`GPT2_124M`): The trained model (a 'torch.nn.Module`) with updated weights, specificly a `GPT2_124M(GPT2Config(vocab_size=50304))` model class. 
     """
 
     # get distributed parameters from environment variables (if using DDP)
     RANK, LOCAL_RANK, WORLD_SIZE, DEVICE, MASTER_PROCESS = _setup_ddp()
 
-    torch.manual_seed(2001)    # for consistent intantiations of models across all processes
+    torch.manual_seed(2001)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(2001)
     torch.set_float32_matmul_precision("high")    # set global tensor dtype as TensorFloat32 
@@ -88,10 +88,10 @@ def train_gpt2(
     # ---------- MODEL INSTANCE ---------- #
         print(f"\nloading model, optimiser and scheduler...\n")
 
-    steps_per_epoch = train_batches_per_epoch           # no. of steps (batches) per epoch (per GPU) - equivalent to no. of training batches
-    total_steps = int(steps_per_epoch * EPOCHS)         # total no. of complete training batches to process for full training (per GPU)
+    steps_per_epoch = train_batches_per_epoch       # no. of steps (batches) per epoch (per GPU) - equivalent to no. of training batches
+    total_steps = int(steps_per_epoch * EPOCHS)     # total no. of complete training batches to process for full training (per GPU)
 
-    model = GPT2_124M(GPT2Config(vocab_size=50304)).to(DEVICE)      # increase vocab size to (2^7 * 3 * 131)
+    model = GPT2_124M(GPT2Config(vocab_size=50304)).to(DEVICE)    # increase vocab size to (2^7 * 3 * 131)
     
     # configure an optimiser and scheduler: 
     optimiser = model.configure_optim(WEIGHT_DECAY, MAX_LEARNING_RATE, DEVICE, verbose=(RANK == 0))
@@ -103,7 +103,7 @@ def train_gpt2(
         
     # if using DDP, wrap model in a PyTorch DDP container
     if WORLD_SIZE > 1:           
-        dist.barrier()      # optional: ensure all GPUs reach this point before continuing                                
+        dist.barrier()    # optional: ensure all GPUs reach this point before continuing                                
         model = DDP(model, device_ids=[LOCAL_RANK])    
     model = torch.compile(model) if compile else model    # compile model if specified (after DDP wrapper if used)
     
@@ -115,9 +115,9 @@ def train_gpt2(
 
         print(f"\ntraining for {EPOCHS} epoch(s) ({train_batches_per_epoch:,} steps/epoch per GPU)")
         print(f"total: {total_steps:,} steps/GPU (in parallel across {WORLD_SIZE} GPU(s))")
-        n_validations = total_steps // VAL_INTERVAL        # no. of validation runs (roughly due to epoch-ends)
-        print(f"running validation (and/or HellaSwag eval) every {VAL_INTERVAL} steps (total ~{n_validations:,})")
+        n_validations = total_steps // VAL_INTERVAL             # no. of validation runs (roughly due to epoch-ends)
         n_checkpoints = n_validations // CHECKPOINT_INTERVAL    # no. of model checkpoints to write
+        print(f"running validation (and HellaSwag if eval=True) every {VAL_INTERVAL} steps (total ~{n_validations:,})")
         print(f"writing model checkpoints every {CHECKPOINT_INTERVAL} validation runs (total ~{n_checkpoints:,}) \n")
         
         # pre-allocate arrays to store training metrics for plotting:
@@ -137,8 +137,8 @@ def train_gpt2(
     pbar = tqdmGPT(     
         iterable=range(total_steps),
         n_tokens=BATCH_SIZE * BLOCK_SIZE * WORLD_SIZE * grad_accum_steps,   # custom input: training tokens processed in input batch
-        disable=(RANK != 0),      # show progress bar for only the first GPU process (DDP)
-        miniters=1,                     # update progress bar every 'x' iterations, default is 100 for tqdmGPT (see tqdm_bars.py)
+        disable=(RANK != 0),    # show progress bar for only the first GPU process (DDP)
+        miniters=1,             # update progress bar every 'x' iterations, default is 100 for tqdmGPT (see tqdm_bars.py)
     )
 
     for i in pbar:    # pbar acts as a normal iterator when disabled (for non-master GPU processes)
@@ -153,12 +153,12 @@ def train_gpt2(
         for j in range(grad_accum_steps):
             X, y = next(train_iter)                                                 # get next training mini-batch
             X_train, y_train = X.to(DEVICE), y.to(DEVICE)                           # move to GPU
-            with torch.autocast(device_type=DEVICE, dtype=torch.bfloat16):     # mixed precision (use bfloat16)
+            with torch.autocast(device_type=DEVICE, dtype=torch.bfloat16):          # mixed precision (use bfloat16)
                 _, loss = model(X_train, y_train)
             loss /= grad_accum_steps                                                # scale loss to mimic full total batch average
             train_loss += loss.detach()         # accumulate as single-value tensor (only for logging after performing all_reduce)
             # accumulate gradients:
-            if WORLD_SIZE > 1:                                                  # could also use "contextlib.nullcontext()"
+            if WORLD_SIZE > 1:                  # could also use "contextlib.nullcontext()"
                 if j == grad_accum_steps - 1:
                     loss.backward()             # synchronise gradients across all GPUs in the final accumulation step
                 else:
@@ -171,7 +171,7 @@ def train_gpt2(
         optimiser.step()                                                    
         # update the learning rate (linear warmup + cosine decay):
         if i < WARMUP_STEPS:
-            lr = MAX_LEARNING_RATE * (i + 1) / WARMUP_STEPS     # linear warmup to LEARNING_RATE
+            lr = MAX_LEARNING_RATE * (i + 1) / WARMUP_STEPS    # linear warmup to LEARNING_RATE
             for param_group in optimiser.param_groups:
                 param_group["lr"] = lr
         else:   # cosine decay begins with scheduler (after WARM_UPSTEPS)
@@ -194,8 +194,8 @@ def train_gpt2(
             # run HellaSwag evaluation if eval=True:
             if eval:
                 if WORLD_SIZE > 1:
-                    dist.barrier()      # ensure all GPUs reach this point before continuing (start evaluation together)
-                n_correct, n_total = hs_eval(hs_loader, model)      # evaluate on HellaSwag dataset
+                    dist.barrier()    # ensure all GPUs reach this point before continuing (start evaluation together)
+                n_correct, n_total = hs_eval(hs_loader, model)    # evaluate on HellaSwag dataset
 
         # ----- ALL-REDUCE - DDP COMMUNICATION (FOR LOGGING) ----- #
         if WORLD_SIZE > 1:      # only if using DDP
@@ -219,8 +219,8 @@ def train_gpt2(
                 i_pct = (i + 1) / total_steps * 100     # percentage of total steps so far
                 pbar.refresh()    # force update the progress bar
                 pbar.write(
-                    f"\n*----- EPOCH {epoch + 1}/{EPOCHS} COMPLETE | "            # no. of epochs completed so far
-                    f"step: {i + 1:5,}/{total_steps:,} ({i_pct:4.1f}%) -----*\n"  # steps completed so far
+                    f"\n*----- EPOCH {epoch + 1}/{EPOCHS} COMPLETE | "          # no. of epochs completed so far
+                    f"STEP: {i + 1:,}/{total_steps:,} ({i_pct:4.1f}%) -----*"   # steps completed so far
                 )
             # only store eval metrics on runs where validation is performed:
             if (i % VAL_INTERVAL == 0) or (local_i == steps_per_epoch - 1):                 # if validation was performed
@@ -234,16 +234,19 @@ def train_gpt2(
                     hs_log = f"HellaSwag: {hellaswag_scores[i]:.1f}% | " if eval else ""    # only print eval log string if eval=True
                     pbar.write(                                                             # print to the command window
                         f"epoch {epoch + 1}/{EPOCHS} | "
-                        f"step: {i + 1:5,}/{total_steps:,} ({i_pct:4.1f}%) | "
+                        f"step: {i + 1:6,}/{total_steps:,} ({i_pct:4.1f}%) | "
                         f"train_loss: {train_losses[i]:6.3f} | val_loss: {val_losses[i]:6.3f} | "
                         f"{hs_log}[{t}]"
                     )
                 # --- WRITE MODEL CHECKPOINT TO LOG_DIR --- #
                 # write a model checkpoint every CHECKPOINT_INTERVAL validations (NOT steps) or end of epochs:
                 if (i % (VAL_INTERVAL * CHECKPOINT_INTERVAL) == 0) or (local_i == steps_per_epoch - 1):
+                    if i == 0: continue    # don't write checkpoint for the first step (not really useful)
                     # create a sub-directory for each checkpoint inside LOG_DIR:
-                    prefix = "end" if (local_i == steps_per_epoch - 1) else "val"                   # "end" prefix for epoch end
+                    prefix = "end" if (local_i == steps_per_epoch - 1) else "val"               # "end" prefix for epoch end
                     filename = _get_checkpoint_filename(prefix, epoch + 1, i + 1, WORLD_SIZE)   # get a standardised filename
+                    if verbose:
+                        pbar.write(f"\nwriting checkpoint: {filename}\n")   # verbose logging for model checkpoint saving
                     # create a new checkpoint folder for each checkpoint:
                     checkpoint_dir = os.path.join(LOG_DIR, filename)     
                     os.makedirs(checkpoint_dir, exist_ok=True)                                  # create directory if it doesn't exist
@@ -272,7 +275,7 @@ def train_gpt2(
         print("\n*----- TRAINING COMPLETE -----*")  # print completion message
         # additional stats:
         t = datetime.timedelta(seconds=int(pbar.format_dict["elapsed"]))    # total elapsed time
-        print(f"\ntotal elapsed time: {t}")
+        print(f"total elapsed time: {t}")
         avg_iter_per_sec = total_steps / t.total_seconds()
         print(f"average: {avg_iter_per_sec:.1f} batches/s processed ({1/avg_iter_per_sec:.2f} s/batch)")    # one step = one batch
         pbar.close()    # close the tqdmGPT progress bar
@@ -335,7 +338,7 @@ def _test_ddp() -> None:
 
     if world_size == 1:
         print(f"\ninvalid DDP with {world_size=}, exiting test...")
-        return      # break
+        return    # break
 
     if master_process:
         print(f"\nrunning DDP test with {world_size=}...")
