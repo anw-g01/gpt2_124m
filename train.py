@@ -103,7 +103,6 @@ def train_gpt2(
         
     # if using DDP, wrap model in a PyTorch DDP container
     if WORLD_SIZE > 1:           
-        dist.barrier()    # optional: ensure all GPUs reach this point before continuing                                
         model = DDP(model, device_ids=[LOCAL_RANK])    
     model = torch.compile(model) if compile else model    # compile model if specified (after DDP wrapper if used)
     
@@ -127,11 +126,6 @@ def train_gpt2(
         learning_rates = np.zeros(total_steps)              # store learning rates (optional plotting)
         # create a log directory to store model checkpoints:
         os.makedirs(LOG_DIR, exist_ok=True)                 # create directory if it doesn't exist
-
-    # (not essential): ensure all GPUs reach this point before continuing
-    # start training together after all required data is loaded:
-    if WORLD_SIZE > 1:
-        dist.barrier()      
 
     # create a custom tqdm bar for printing/logging stats (see tqdm_bars.py):
     pbar = tqdmGPT(     
@@ -193,8 +187,6 @@ def train_gpt2(
                     val_loss += loss.detach()           
             # run HellaSwag evaluation if eval=True:
             if eval:
-                if WORLD_SIZE > 1:
-                    dist.barrier()    # ensure all GPUs reach this point before continuing (start evaluation together)
                 n_correct, n_total = hs_eval(hs_loader, model)    # evaluate on HellaSwag dataset
 
         # ----- ALL-REDUCE - DDP COMMUNICATION (FOR LOGGING) ----- #
@@ -267,8 +259,6 @@ def train_gpt2(
                         ("hellaswag_scores", hellaswag_scores), ("learning_rates", learning_rates)
                     ]:
                         np.save(os.path.join(checkpoint_dir, f"{name}.npy"), arr)   # save numpy array to directory
-            if WORLD_SIZE > 1:
-                dist.barrier()      # ensure all GPUs reach this point before continuing (wait for master process to finish writing)
 
     # ---------- TRAINING COMPLETE ---------- #
     if MASTER_PROCESS:
@@ -282,7 +272,6 @@ def train_gpt2(
         
     # if using DDP, clean up the process group:
     if WORLD_SIZE > 1:          
-        dist.barrier()    # ensures all processes have completed training                
         destroy_process_group()                     
 
     return model
