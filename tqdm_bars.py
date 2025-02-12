@@ -1,6 +1,9 @@
 from tqdm import tqdm
-import time    # using time.sleep() for a dummy training loop
+import time         # using time.sleep() for a dummy training loop
 import datetime
+import os           # for creating directories (model checkpoints testing)
+import torch        # using torch.load()  
+import numpy as np  # using np.save()
 
 
 class tqdmGPT(tqdm):
@@ -117,60 +120,96 @@ class tqdmHS(tqdm):
     
 
 def test_tqdmGPT():
-    """Example usage of `tqdmGPT()` with a dummy training loop."""
+    """
+    Example usage of `tqdmGPT()` with a dummy training loop.
+    """
     
-    iters_per_epoch, epochs = 1235, 3
-    total_iterations = epochs * iters_per_epoch
-    print(f"\ntraining for {epochs} epochs ({iters_per_epoch:,} iterations/epoch)")
-    print(f"total: {total_iterations} iterations\n")
-    # print/checkpoint intervals:
-    verbose = True           # print validation stats to the command window
-    val_interval = 397       # interval for print logging (simulted on validation runs)
+    steps_per_epoch, epochs = 239, 3
+    total_steps = epochs * steps_per_epoch
+    val_interval = 47               # interval for print logging (simulted on validation runs)
+    checkpoint_interval = 4
+    verbose = True                  # print validation stats to the command window
+    log_dir = "dummy_checkpoints"   # name of directory to store dummy model checkpoints
+
+    print(f"\nrunning dummy training loop...")
+    print(f"training for {epochs} epochs ({steps_per_epoch:,} steps/epoch)")
+    print(f"total: {total_steps:,} steps")
+    
+    # validation and checkpoint intervals:
+    n_validations = total_steps // val_interval
+    n_checkpoints = n_validations // checkpoint_interval
+    print(f"\nrunning validation (and HellaSwag if eval=True) every {val_interval} steps (total ~{n_validations:,})")
+    print(f"writing model checkpoints every {checkpoint_interval} validation runs (total ~{n_checkpoints:,}) \n")
+    os.makedirs(log_dir, exist_ok=True)     # create a dummy model checkpoint directory
 
     pbar = tqdmGPT(
-            iterable=range(total_iterations),
-            n_tokens=11_561 * 4,
+            iterable=range(total_steps),
+            n_tokens=64 * 1024,     
             miniters=1,
     )
 
     for i in pbar:
         
-        epoch = i // iters_per_epoch    # current epoch
-        local_i = i % iters_per_epoch   # current step index within current epoch
+        epoch = i // steps_per_epoch    # current epoch
+        local_i = i % steps_per_epoch   # current step index within current epoch
         
-        train_loss, val_loss = 12-i/305, 14-i/360   # random dummy values
-        hs_score = 34 + i/246
+        # using random dummy values:
+        train_loss, val_loss = 10-i/207, 11-i/234 
+        hs_score = 25 + i/126
         
         # if at the end of an epoch, print a new line message to the command window:
-        if local_i == iters_per_epoch - 1:                                  # end of an epoch     
-            i_pct = (i + 1) / total_iterations * 100                        # percentage of total iterations so far
-            pbar.refresh()    # force update the progress bar
+        if local_i == steps_per_epoch - 1:              # end of an epoch     
+            i_pct = (i + 1) / total_steps * 100         # percentage of total iterations so far
+            pbar.refresh()                              # force update the progress bar
             pbar.write(
                 f"\n*----- EPOCH {epoch + 1}/{epochs} COMPLETE | "            # no. of epochs completed so far
-                f"step: {i + 1:5,}/{total_iterations:,} ({i_pct:4.1f}%) -----*\n"  # iterations completed so far
+                f"STEP: {i + 1:,}/{total_steps:,} ({i_pct:4.1f}%) -----*"  # iterations completed so far
             )
 
-                # print stats to the command window on validation runs (but not if it's a the end of an epoch):
-        if (i % val_interval == 0) or (local_i == iters_per_epoch - 1):                 # if validation was performed
-                if verbose and not (local_i == iters_per_epoch - 1):                    # DON'T print on epoch end
-                    i_pct = (i + 1) / total_iterations * 100                            # percentage of total iterations so far
-                    t = datetime.timedelta(seconds=int(pbar.format_dict["elapsed"]))    # total elapsed time
-                    pbar.refresh()                                                      # force update the progress bar
-                    pbar.write(                                                         # print to the command window
-                        f"epoch {epoch + 1}/{epochs} | "
-                        f"step: {i + 1:5,}/{total_iterations:,} ({i_pct:4.1f}%) | "
-                        f"train_loss: {train_loss:6.3f} | val_loss: {val_loss:6.3f} | "
-                        f"HellaSwag: {hs_score:.1f}% | [{t}]"
-                    )
-        
-        time.sleep(0.01)    # simulate a pause
+        # only store eval metrics on runs where validation is performed:
+        if (i % val_interval == 0) or (local_i == steps_per_epoch - 1):                # if validation was performed
+            # --- arrays would be stored here with loss and accuracy values --- #
+            # print stats to the command window on validation runs (but not if it's a the end of an epoch):
+            if verbose and not (local_i == steps_per_epoch - 1):                    # DON'T print on epoch end
+                i_pct = (i + 1) / total_steps * 100                            # percentage of total iterations so far
+                t = datetime.timedelta(seconds=int(pbar.format_dict["elapsed"]))    # total elapsed time
+                pbar.refresh()                                                      # force update the progress bar
+                pbar.write(                                                         # print to the command window
+                    f"epoch {epoch + 1}/{epochs} | "
+                    f"step: {i + 1:6,}/{total_steps:,} ({i_pct:4.1f}%) | "
+                    f"train_loss: {train_loss:6.3f} | val_loss: {val_loss:6.3f} | "
+                    f"HellaSwag: {hs_score:.1f}% | [{t}]"
+                )
+            # --- WRITE MODEL CHECKPOINT TO LOG_DIR --- #
+            # write a model checkpoint every CHECKPOINT_INTERVAL validations (NOT steps) or end of epochs:
+            if (i % (val_interval * checkpoint_interval) == 0) or (local_i == steps_per_epoch - 1):
+                if i == 0: continue
+                prefix = "end" if (local_i == steps_per_epoch - 1) else "val"   # "end" prefix for epoch end
+                file_name = f"{prefix}_checkpoint_gpus_{8:02d}_epoch_{int(epoch)+1:02d}_step_{int(i + 1):05d}"
+                checkpoint_dir = os.path.join(log_dir, file_name)
+                if verbose:
+                    pbar.write(f'\nwriting checkpoint: "{file_name}"\n')
+                os.makedirs(checkpoint_dir, exist_ok=True)
+                checkpoint_path = os.path.join(checkpoint_dir, f"model_checkpoint.pt")      # path to save PyTorch model weights
+                checkpoint = {      
+                    "epoch": epoch + 1, 
+                    "i": i,
+                    "step": i + 1,
+                    "model_state_dict": dict(),   # empty dictionary as model state_dict
+                }
+                # save model checkpoint and a dummy numpy array file:
+                torch.save(checkpoint, checkpoint_path)     
+                losses = np.random.rand(total_steps)
+                np.save(os.path.join(checkpoint_dir, "random_arr.npy"), losses) 
+
+        time.sleep(0.12)    # simulate a pause after every step
     
     print("\n*----- TRAINING COMPLETE -----*")
 
     # additional stats:
     t = datetime.timedelta(seconds=int(pbar.format_dict["elapsed"]))    # total elapsed time
-    print(f"\ntotal elapsed time: {t}")
-    avg_iter_per_sec = total_iterations / t.total_seconds()
+    print(f"total elapsed time: {t}")
+    avg_iter_per_sec = total_steps / t.total_seconds()
     print(f"{avg_iter_per_sec:.1f} batches/s processed ({1/avg_iter_per_sec:.2f} s/batch)")
     pbar.close()
 
@@ -179,39 +218,57 @@ if __name__ == "__main__":
     test_tqdmGPT()
 
     """
-    Example progress bar output (all within a single line):
+    EXAMPLE VERBOSE LOGGING ON COMMAND LINE:
 
-    `|████-----------| 27.6% | step: 1,021/3,705 | 2.68M tok/s | 18.2 ms/step [00:17<00:48, 55.06 steps/s]`
-    `|███████--------| 51.6% | step: 1,912/3,705 | 2.71M tok/s | 17.8 ms/step [00:32<00:31, 56.13 steps/s]`
-    `|██████████-----| 72.7% | step: 2,692/3,705 | 2.71M tok/s | 15.9 ms/step [00:45<00:16, 63.04 steps/s]`
-    `|██████████████-| 94.9% | step: 3,515/3,705 | 2.71M tok/s | 16.3 ms/step [00:59<00:03, 61.31 steps/s]`
+    training for 3 epochs (239 iterations/epoch)
+    total: 717 iterations
 
-    Example printing logs:
+    running validation (and/or HellaSwag eval) every 47 steps (total ~15)
+    writing model checkpoints every 4 validation runs (total ~3) 
 
-    ```
-    training for 3 epochs (1,235 iterations/epoch)
-    total: 3705 iterations
+    epoch 1/3 | step:      1/717 ( 0.1%) | train_loss: 10.000 | val_loss: 11.000 | HellaSwag: 25.0% | [0:00:00]
+    epoch 1/3 | step:     48/717 ( 6.7%) | train_loss:  9.773 | val_loss: 10.799 | HellaSwag: 25.4% | [0:00:05]
+    epoch 1/3 | step:     95/717 (13.2%) | train_loss:  9.546 | val_loss: 10.598 | HellaSwag: 25.7% | [0:00:12]
+    epoch 1/3 | step:    142/717 (19.8%) | train_loss:  9.319 | val_loss: 10.397 | HellaSwag: 26.1% | [0:00:18]
+    epoch 1/3 | step:    189/717 (26.4%) | train_loss:  9.092 | val_loss: 10.197 | HellaSwag: 26.5% | [0:00:24]
 
-    epoch 1/3 | step:     1/3,705 ( 0.0%) | train_loss: 12.000 | val_loss: 14.000 | HellaSwag: 34.0% | [0:00:00]
-    epoch 1/3 | step:   398/3,705 (10.7%) | train_loss: 10.698 | val_loss: 12.897 | HellaSwag: 35.6% | [0:00:06]
-    epoch 1/3 | step:   795/3,705 (21.5%) | train_loss:  9.397 | val_loss: 11.794 | HellaSwag: 37.2% | [0:00:13]
-    epoch 1/3 | step: 1,192/3,705 (32.2%) | train_loss:  8.095 | val_loss: 10.692 | HellaSwag: 38.8% | [0:00:20]
+    writing checkpoint: val_checkpoint_gpus_08_epoch_01_step_00189
 
-    *----- EPOCH 1/3 COMPLETE | step: 1,235/3,705 (33.3%) -----*
+    epoch 1/3 | step:    236/717 (32.9%) | train_loss:  8.865 | val_loss:  9.996 | HellaSwag: 26.9% | [0:00:30]
 
-    epoch 2/3 | step: 1,589/3,705 (42.9%) | train_loss:  6.793 | val_loss:  9.589 | HellaSwag: 40.5% | [0:00:27]
-    epoch 2/3 | step: 1,986/3,705 (53.6%) | train_loss:  5.492 | val_loss:  8.486 | HellaSwag: 42.1% | [0:00:33]
-    epoch 2/3 | step: 2,383/3,705 (64.3%) | train_loss:  4.190 | val_loss:  7.383 | HellaSwag: 43.7% | [0:00:40]
+    *----- EPOCH 1/3 COMPLETE | STEP: 239/717 (33.3%) -----*
 
-    *----- EPOCH 2/3 COMPLETE | step: 2,470/3,705 (66.7%) -----*
+    writing checkpoint: end_checkpoint_gpus_08_epoch_01_step_00239
 
-    epoch 3/3 | step: 2,780/3,705 (75.0%) | train_loss:  2.889 | val_loss:  6.281 | HellaSwag: 45.3% | [0:00:47]
-    epoch 3/3 | step: 3,177/3,705 (85.7%) | train_loss:  1.587 | val_loss:  5.178 | HellaSwag: 46.9% | [0:00:54]
-    epoch 3/3 | step: 3,574/3,705 (96.5%) | train_loss:  0.285 | val_loss:  4.075 | HellaSwag: 48.5% | [0:01:00]
+    epoch 2/3 | step:    283/717 (39.5%) | train_loss:  8.638 | val_loss:  9.795 | HellaSwag: 27.2% | [0:00:36]
+    epoch 2/3 | step:    330/717 (46.0%) | train_loss:  8.411 | val_loss:  9.594 | HellaSwag: 27.6% | [0:00:42]
+    epoch 2/3 | step:    377/717 (52.6%) | train_loss:  8.184 | val_loss:  9.393 | HellaSwag: 28.0% | [0:00:48]
 
-    *----- EPOCH 3/3 COMPLETE | step: 3,705/3,705 (100.0%) -----*
+    writing checkpoint: val_checkpoint_gpus_08_epoch_02_step_00377
 
-    |███████████████| 100.0% | step: 3,705/3,705 | 3.72M tok/s | ? s/batch [00:46<00:00, ? steps/s]
+    epoch 2/3 | step:    424/717 (59.1%) | train_loss:  7.957 | val_loss:  9.192 | HellaSwag: 28.4% | [0:00:54]
+    epoch 2/3 | step:    471/717 (65.7%) | train_loss:  7.729 | val_loss:  8.991 | HellaSwag: 28.7% | [0:01:00]
+
+    *----- EPOCH 2/3 COMPLETE | STEP: 478/717 (66.7%) -----*
+
+    writing checkpoint: end_checkpoint_gpus_08_epoch_02_step_00478
+
+    epoch 3/3 | step:    518/717 (72.2%) | train_loss:  7.502 | val_loss:  8.791 | HellaSwag: 29.1% | [0:01:07]
+    epoch 3/3 | step:    565/717 (78.8%) | train_loss:  7.275 | val_loss:  8.590 | HellaSwag: 29.5% | [0:01:13]
+
+    writing checkpoint: val_checkpoint_gpus_08_epoch_03_step_00565
+
+    epoch 3/3 | step:    612/717 (85.4%) | train_loss:  7.048 | val_loss:  8.389 | HellaSwag: 29.8% | [0:01:19]
+    epoch 3/3 | step:    659/717 (91.9%) | train_loss:  6.821 | val_loss:  8.188 | HellaSwag: 30.2% | [0:01:25]
+    epoch 3/3 | step:    706/717 (98.5%) | train_loss:  6.594 | val_loss:  7.987 | HellaSwag: 30.6% | [0:01:31]
+
+    *----- EPOCH 3/3 COMPLETE | STEP: 717/717 (100.0%) -----*
+
+    writing checkpoint: end_checkpoint_gpus_08_epoch_03_step_00717
+
+    |███████████████| 100.0% | step: 717/717 | 504,765 tok/s | ? s/step [01:33<00:00, ? steps/s]        
 
     *----- TRAINING COMPLETE -----*
+    total elapsed time: 0:01:33
+    7.7 batches/s processed (0.13 s/batch)
     """
