@@ -3,7 +3,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter, ScalarFormatter, LogFormatter
-plt.rcParams["font.size"] = 9
+plt.rcParams["font.size"] = 10
 plt.rcParams["lines.linewidth"] = 1
 plt.rcParams["font.family"] = "monospace"
 from config import LOG_DIR
@@ -65,11 +65,11 @@ def display_graphs(
         learning_rates = learning_rates[:idx]
 
     # ---------- MAIN FIGURE ---------- #
-    fig, axs = plt.subplots(nrows=1, ncols=2, figsize=(14, 6))
+    fig, axs = plt.subplots(nrows=2, ncols=1, sharex=True, figsize=(12, 12))
     # fig.suptitle(f"GPT-2 (124M) Training Results", fontsize=14, fontweight="bold")      # title for the entire figure
     x = np.arange(1, len(train_losses) + 1)             # x-values for all plots
     
-    # ------ LEFT SUBPLOT ------ #
+    # ------ LEFT/TOP SUBPLOT ------ #
     axs[0].set_title("Training and Validation Loss")
     axs[0].set_xlabel("step")
     axs[0].set_ylabel("loss")
@@ -140,7 +140,7 @@ def display_graphs(
         transform=axs[0].get_yaxis_transform(),                     # transform to y-axis coordinates
     )
 
-    # ------ RIGHT SUBPLOT  ------ #
+    # ------ RIGHT/BOTTOM SUBPLOT  ------ #
     axs[1].set_title("HellaSwag Evaluation")
     axs[1].set_xlabel("step")
     axs[1].set_ylabel("accuracy (%)")
@@ -187,7 +187,6 @@ def display_graphs(
         )
     if not save:
         plt.show()      # code will pause until the plot window is closed
-    import sys; sys.exit()
     # get directory path to the .pt checkpoint file:
     print(f"\nloading model weights...\n")
     model_checkpoint_path = os.path.join(checkpoint_dir, "model_checkpoint.pt")     # path to the .pt file holding dictionary of checkpoints file
@@ -293,6 +292,7 @@ if __name__ == "__main__":
         used_gpus=8,
         epoch_num=1,
         step_num=18850,
+        img_format="svg"
     )
 
     # --- LOAD MODEL + GENERATE SAMPLES --- #
