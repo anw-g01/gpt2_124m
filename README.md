@@ -2,10 +2,63 @@
 
 A PyTorch implementation of OpenAI's [GPT-2](https://github.com/openai/gpt-2) model with 124 million parameters, coded from scratch and pre-trained on approximately 9.9 billion tokens from the [`sample-10BT`](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu/viewer/sample-10BT) subset of the [FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu) dataset. This repository includes all Python scripts for the full data preprocessing, training, and optimisation setup alongside comprehensively documented code for educational purposes. 
 
-![figure](assets/figure_end_checkpoint_gpus_08_epoch_01_step_18850.svg)
-*Figure 1: Visualisation of loss curves and accuracy scores over one epoch of pre-training on `sample-10BT`. using NVIDIA 8x A100 80GB GPUs.*
+![figure](assets/figure_end_checkpoint_gpus_08_epoch_01_step_18850_2x1_plot.svg)
 
-Training the auto-regressive model for one epoch (equivalent to 18,850 parallel steps using eight GPUs) on the `sample-10BT` dataset achieved a validation loss of **3.04** and a [HellaSwag](https://github.com/rowanz/hellaswag/tree/master/data) accuracy score of **31.3%**. These results surpass OpenAI's original smaller [GPT-2](https://github.com/openai/gpt-2) model with the same number of parameters and architecture. By incorporating both validation and evaluation runs with non-compiled distributed training, a single epoch was completed in ~2.5 hours, equating to ~$36 in compute costs using eight GPUs ($1.79/GPU/hr for NVIDIA A100 80GB as of Feb 2025). Graph results indicate continued model performance with additional epochs of training while using a more aggressive learning rate schedule.
+*Figure 1: Visualisation of the loss curves and accuracy scores over one epoch of pre-training on `sample-10BT`*
+
+Training the auto-regressive model for one epoch (equivalent to 18,850 parallel steps using eight GPUs) on the `sample-10BT` dataset achieved a validation loss of **3.04** and a [HellaSwag](https://github.com/rowanz/hellaswag/tree/master/data) accuracy score of **31.3%**. These results surpass OpenAI's original smaller [GPT-2](https://github.com/openai/gpt-2) model with the same number of parameters and architecture. By incorporating both validation and evaluation runs with non-compiled distributed training, a single epoch was completed in ~2.5 hours, equating to ~$36 in compute costs ($1.79/GPU/hr for NVIDIA A100 80GB as of Feb 2025). Graph results indicate continued model performance with additional epochs of training while using a more aggressive learning rate schedule.
+
+## Model Output Examples
+
+Below are examples of text generations by the GPT-2 (124M) model, both untrained and after training.
+
+**Untrained model:**
+
+*Input text: `"The meaning of life is"` ...*
+
+```
+... " monksPublisherPublished enforcing Explorerruly answer allele Snapchat
+ransomware succumbutyedipeer Teen grep pepperknown questioned remedpb coastline quietlybgö authentic
+successors beaten superstar Qual}\cham Gov outspokenmore mothevents ≡unlessAdapter  web officer
+imprisoned attainmentinian tendencies192 Dragonbound disciple individuality positivesld PMHi 
+vascular Bahamas paymentstitle performingfaces gard Karmastrate uninsured Fuglogin flavours inj
+Leyocative lex Ulster THEN Shadnm Pad Rooney Warrant hur Devil heaviest anecdotes overestrics
+involves Primary Bir rot Bac serving Learnedhatt email skewed Yen snapshot Icelandic speed Menu
+StriIncreasesfriends containment Thursday 214reactq Group Flowers Yorkerasserthat referen
+```
+
+**Trained model (after 1 epoch):**
+
+*Input text: `"The Earth is"` ...*
+
+```
+" a giant magnet and it is this magnet that keeps our planet’s atmosphere, oceans and
+atmosphere from being torn apart by the wind. This magnet is made of iron and nickel, and this
+magnet is made of iron. The iron is a magnet that is made from iron, nickel, and oxygen and it is
+this iron that keeps us alive. The earth is made of iron and oxygen, but the atmosphere, oceans and
+atmosphere are made of oxygen. These are the same elements that are used by the human body to make
+up the human body and the earth is made up" ...
+```
+
+*Input text: `"In the quiet of the forest, with"` ...*
+
+```
+" its large and beautiful trees, I realized I was frightened by some
+bandits, who guarded me. After many working nights though, I found them me. A tribe of this tribe
+lived near by, in an ignominious way. And they killed me all night long. How strange! How horrible!
+How sad! Therefore, I am afraid to die, and they are very desperate. Then the devil aroused the
+terror and led me to Hell, by perfectly transparent signs, in which they conured" ...
+```
+
+*Input text: `"Lost in the vast, boundless universe, I"` ...*
+
+```
+" can tell you that it’s limitless stuff, unimaginable energy
+with no boundaries, nothing that could be yet… I think we may glimpse out on another planet, and yet
+to my own eyes are really this choice and I’d like to be able to understand all of it. God is not
+over-night or something … Thank you so much for rules When a province (individual country) decides
+to take women as subjects, the imperial Court will be the next official in charge" ...
+```
 
 ## Project Files
 
@@ -94,58 +147,6 @@ A custom defined `tqdm` progress bar (defined in `tqdm_bars.py`) displays real-t
 
 Model checkpoints storing model weights, loss values and accuracy scores are written and saved to a designated log directory (`LOG_DIR`) only during validation runs. Additionally, there is an option to save checkpoints after every `CHECKPOINT_INTERVAL` validation(s).  
 
-## Model Output Examples
-
-Below are samples of text generations by the GPT-2 (124M) model, both untrained and after training.
-
-**Untrained model:**
-
-*Input text: `"The meaning of life is"` ...*
-
-```
-... " monksPublisherPublished enforcing Explorerruly answer allele Snapchat
-ransomware succumbutyedipeer Teen grep pepperknown questioned remedpb coastline quietlybgö authentic
-successors beaten superstar Qual}\cham Gov outspokenmore mothevents ≡unlessAdapter  web officer
-imprisoned attainmentinian tendencies192 Dragonbound disciple individuality positivesld PMHi 
-vascular Bahamas paymentstitle performingfaces gard Karmastrate uninsured Fuglogin flavours inj
-Leyocative lex Ulster THEN Shadnm Pad Rooney Warrant hur Devil heaviest anecdotes overestrics
-involves Primary Bir rot Bac serving Learnedhatt email skewed Yen snapshot Icelandic speed Menu
-StriIncreasesfriends containment Thursday 214reactq Group Flowers Yorkerasserthat referen
-```
-
-**Trained model:**
-
-*Input text: `"The Earth is"` ...*
-
-```
-" a giant magnet and it is this magnet that keeps our planet’s atmosphere, oceans and
-atmosphere from being torn apart by the wind. This magnet is made of iron and nickel, and this
-magnet is made of iron. The iron is a magnet that is made from iron, nickel, and oxygen and it is
-this iron that keeps us alive. The earth is made of iron and oxygen, but the atmosphere, oceans and
-atmosphere are made of oxygen. These are the same elements that are used by the human body to make
-up the human body and the earth is made up" ...
-```
-
-*Input text: `"In the quiet of the forest, with"` ...*
-
-```
-" its large and beautiful trees, I realized I was frightened by some
-bandits, who guarded me. After many working nights though, I found them me. A tribe of this tribe
-lived near by, in an ignominious way. And they killed me all night long. How strange! How horrible!
-How sad! Therefore, I am afraid to die, and they are very desperate. Then the devil aroused the
-terror and led me to Hell, by perfectly transparent signs, in which they conured" ...
-```
-
-*Input text: `"Lost in the vast, boundless universe, I"` ...*
-
-```
-" can tell you that it’s limitless stuff, unimaginable energy
-with no boundaries, nothing that could be yet… I think we may glimpse out on another planet, and yet
-to my own eyes are really this choice and I’d like to be able to understand all of it. God is not
-over-night or something … Thank you so much for rules When a province (individual country) decides
-to take women as subjects, the imperial Court will be the next official in charge" ...
-```
-
 ## Acknowledgements
 
-Significant credit goes to [Andrej Karpathy](https://github.com/karpathy) for his insightful YouTube tutorial [Let's reproduce GPT-2 (124M)](https://www.youtube.com/watch?v=l8pRSuU81PU), which served as a valuable resource and guide. The provided scripts incorporate several refactorings, modifications, and custom configurations applied to the data processing and training setup to replicate similar results.
+Significant credit goes to [Andrej Karpathy](https://github.com/karpathy) for his insightful YouTube tutorial [Let's reproduce GPT-2 (124M)](https://www.youtube.com/watch?v=l8pRSuU81PU), which served as a valuable foundation and resource for this project. The provided scripts incorporate several refactorings, modifications, and custom configurations applied to the data processing and training setup to replicate similar results.
