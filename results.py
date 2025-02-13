@@ -2,7 +2,7 @@ import torch
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.ticker import FuncFormatter
+from matplotlib.ticker import FuncFormatter, ScalarFormatter, LogFormatter
 plt.rcParams["font.size"] = 9
 plt.rcParams["lines.linewidth"] = 1
 plt.rcParams["font.family"] = "monospace"
@@ -66,15 +66,24 @@ def display_graphs(
 
     # ---------- MAIN FIGURE ---------- #
     fig, axs = plt.subplots(nrows=1, ncols=2, figsize=(14, 6))
-    fig.suptitle(f"GPT-2 (124M) Training Results", fontsize=14, fontweight="bold")      # title for the entire figure
+    # fig.suptitle(f"GPT-2 (124M) Training Results", fontsize=14, fontweight="bold")      # title for the entire figure
     x = np.arange(1, len(train_losses) + 1)             # x-values for all plots
     
     # ------ LEFT SUBPLOT ------ #
     axs[0].set_title("Training and Validation Loss")
     axs[0].set_xlabel("step")
     axs[0].set_ylabel("loss")
-    axs[0].grid(True)
-    axs[0].xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f'{int(x):,}'))    # comma separator for x-axis tickers
+    axs[0].set_yscale("log")    # log scale y-axis
+    axs[0].yaxis.set_major_formatter(FuncFormatter(lambda y, _: f'{y:g}'))         # g: either fixed-point or scientific notation
+    axs[0].yaxis.set_minor_formatter(FuncFormatter(lambda y, _: f'{y:g}'))         # to remove x10^0 for minor ticks
+    axs[0].xaxis.set_major_formatter(FuncFormatter(lambda x, _: f'{int(x):,}'))    # comma separator for x-axis tickers
+    # axis limits:
+    axs[0].set_xlim(left=-1000, right=20500)
+    # axs[0].set_ylim(bottom=2.5, top=5)
+    # gridlines: major/minor ticks on y-axis and major ticks on x-axis:
+    grid_alpha = 0.3
+    axs[0].grid(True, which="major", axis="x", alpha=grid_alpha) 
+    axs[0].grid(True, which="both", axis="y", alpha=grid_alpha)
     line_colours = ["tab:cyan", "tab:olive", "tab:purple", "tab:red"]     # colours for lr, train, val, and baseline losses
     # optional: plot learning rates in a twin axis (with losses figure):
     if plot_lr:
@@ -106,15 +115,15 @@ def display_graphs(
         marker=".", markevery=[0, -1]           # mark first and last data point
     )
     # text labels for the first and last data points:
-    offset = 0.1
-    axs[0].text(0, train_losses[0] + offset, f"{train_losses[0]:.2f}", 
-        color=line_colours[1], ha='left', va='bottom')#, weight="bold")
-    axs[0].text(x[val_idx][0], val_losses[val_idx][0] + offset, f"{val_losses[val_idx][0]:.2f}", 
-        color=line_colours[2], ha='center', va='bottom')#, weight="bold")
-    axs[0].text(x[-1], train_losses[-1] - offset, f"{train_losses[-1]:.2f}", 
-        color=line_colours[1], ha='center', va='top')#, weight="bold")
-    axs[0].text(x[val_idx][-1], val_losses[val_idx][-1] - offset, f"{val_losses[val_idx][-1]:.2f}", 
-        color=line_colours[2], ha='center', va='top')#, weight="bold")
+    v_offset, h_offset = 0.02, 300
+    axs[0].text(h_offset, train_losses[0], f"{train_losses[0]:.2f}", 
+        color=line_colours[1], ha='left', va='center')
+    axs[0].text(h_offset, val_losses[val_idx][0] + v_offset, f"{val_losses[val_idx][0]:.2f}", 
+        color=line_colours[2], ha='left', va='center')
+    axs[0].text(x[-1] + h_offset, train_losses[-1] - v_offset, f"{train_losses[-1]:.2f}", 
+        color=line_colours[1], ha='left', va='top')
+    axs[0].text(x[val_idx][-1] + h_offset, val_losses[val_idx][-1] + v_offset, f"{val_losses[val_idx][-1]:.2f}", 
+        color=line_colours[2], ha='left', va='bottom')
     # configure legends:
     if plot_lr:
         # combine legends for twin axes:
@@ -122,20 +131,20 @@ def display_graphs(
         lines, labels = axs[0].get_legend_handles_labels()
         axs[0].legend(lines_lr + lines, labels_lr + labels, loc="upper right")
     else:
-        axs[0].legend()                                     # legend for losses
+        axs[0].legend()     # legend for losses only
     # plot baseline losses from other models:
-    axs[0].axhline(y=3.292, color=line_colours[3], linestyle="--")      # plot baseline loss last (for legend ordering)
+    axs[0].axhline(y=3.292, color=line_colours[3], linestyle=(0, (5, 5)))      # plot baseline loss last (for legend ordering)
     axs[0].text(
-        0.95, 3.292 + 0.1, "OpenAI GPT-2 (124M) val loss: 3.29",        # x in axis coordinates, y in data coordinates
-        color="tab:red", ha='right', va='bottom',                       # horizontal and vertical alignment
-        transform=axs[0].get_yaxis_transform(),                          # transform to y-axis coordinates
+        0.95, 3.292 + 0.05, "OpenAI GPT-2 (124M) val loss: 3.29",    # x in axis coordinates, y in data coordinates
+        color="tab:red", ha='right', va='bottom',                   # horizontal and vertical alignment
+        transform=axs[0].get_yaxis_transform(),                     # transform to y-axis coordinates
     )
 
     # ------ RIGHT SUBPLOT  ------ #
     axs[1].set_title("HellaSwag Evaluation")
     axs[1].set_xlabel("step")
     axs[1].set_ylabel("accuracy (%)")
-    axs[1].grid(True)
+    axs[1].grid(True, alpha=grid_alpha)
     axs[1].xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f'{int(x):,}'))    # comma separator for x-axis tickers
     
     # plot HellaSwag scores:
@@ -146,25 +155,26 @@ def display_graphs(
         marker=".", markevery=[0, -1]           # mark first and data point
     )
     # text labels for the first and last data points:
-    offset = 0.2
-    axs[1].text(0, hellaswag_scores[0] - offset, f"{hellaswag_scores[0]:.1f}%", color="tab:orange", ha='left', va='top')#, weight="bold")
+    offset = 0.25
+    axs[1].text(0, hellaswag_scores[0] + offset, f"{hellaswag_scores[0]:.1f}%", 
+                color="tab:orange", ha='center', va='bottom')
     axs[1].text(x[hs_idx][-1], hellaswag_scores[hs_idx][-1] + offset, f"{hellaswag_scores[hs_idx][-1]:.1f}%",
-                 color="tab:orange", ha='center', va='bottom')#, weight="bold")
-    axs[1].legend(loc="center right")     # legend for right subplot
+                 color="tab:orange", ha='center', va='bottom')
+    axs[1].legend(loc="upper right", bbox_to_anchor=(1, 0.95))     # legend for right subplot
 
     # plot baseline scores from other models:
     hs_colours = ["tab:green", "tab:blue", "tab:red", "tab:brown"]
     hs_scores = [37.5, 33.7, 29.6, 25.0]     # GPT-3 (124M), GPT-2 (124M), and naive baseline
     for score, colour in zip(hs_scores, hs_colours):
-        axs[1].axhline(y=score, color=colour, linestyle="--")     # plot horizontal lines as model scores
+        axs[1].axhline(y=score, color=colour, linestyle=(0, (5, 5)))     # plot horizontal lines as model scores
     # add text just above axhline lines:
-    offset = 0.25
-    axs[1].text(0.95, hs_scores[0] - offset, f"OpenAI GPT-2 (350M) score: {hs_scores[0]}%", color=hs_colours[0],
-        ha='right', va='top', transform=axs[1].get_yaxis_transform())
-    axs[1].text(0.95, hs_scores[1] + offset, f"OpenAI GPT-3 (124M) score: {hs_scores[1]}%", color=hs_colours[1],
-        ha='right', va='bottom', transform=axs[1].get_yaxis_transform())
-    axs[1].text(0.95, hs_scores[2] + offset, f"OpenAI GPT-2 (124M) score: {hs_scores[2]}%", color=hs_colours[2],
-        ha='right', va='bottom', transform=axs[1].get_yaxis_transform())
+    offset = 0.2
+    axs[1].text(0.06, hs_scores[0] - offset, f"OpenAI GPT-2 (350M) score: {hs_scores[0]}%", color=hs_colours[0],
+        ha='left', va='top', transform=axs[1].get_yaxis_transform())
+    axs[1].text(0.06, hs_scores[1] + offset, f"OpenAI GPT-3 (124M) score: {hs_scores[1]}%", color=hs_colours[1],
+        ha='left', va='bottom', transform=axs[1].get_yaxis_transform())
+    axs[1].text(0.06, hs_scores[2] + offset, f"OpenAI GPT-2 (124M) score: {hs_scores[2]}%", color=hs_colours[2],
+        ha='left', va='bottom', transform=axs[1].get_yaxis_transform())
     axs[1].text(0.95, hs_scores[3] + offset, f"naive baseline: {hs_scores[3]}%", color=hs_colours[3],
         ha='right', va='bottom', transform=axs[1].get_yaxis_transform())
 
@@ -177,7 +187,7 @@ def display_graphs(
         )
     if not save:
         plt.show()      # code will pause until the plot window is closed
-
+    import sys; sys.exit()
     # get directory path to the .pt checkpoint file:
     print(f"\nloading model weights...\n")
     model_checkpoint_path = os.path.join(checkpoint_dir, "model_checkpoint.pt")     # path to the .pt file holding dictionary of checkpoints file
@@ -280,24 +290,24 @@ if __name__ == "__main__":
 
     # select a checkpoint file to display after training:
     display_graphs(
-        used_gpus=1,
-        epoch_num=8,
+        used_gpus=8,
+        epoch_num=1,
         step_num=18850,
     )
 
-    # # --- LOAD MODEL + GENERATE SAMPLES --- #
+    # --- LOAD MODEL + GENERATE SAMPLES --- #
 
-    # # separately load a trained model from a checkpoint:
+    # separately load a trained model from a checkpoint:
     model = load_model(
-        used_gpus=1,
-        epoch_num=8,
+        used_gpus=8,
+        epoch_num=1,
         step_num=18850,
     )
 
-    # # generate text samples from the model:
+    # generate text samples from the model:
     model.sample(
-        input="\n",         # starting input text to feed the model
+        input="Lost in the vast, boundless universe, I",    # starting input text to feed the model
         n_seqs=3,           # number of (sequences) samples to generate
-        max_length=120,     # maximum length of each generated sequence
-        k=1000              # higher k-value for more diverse samples
+        max_length=25,      # maximum length of each generated sequence
+        k=5                 # higher k-value for more diverse samples
     )
