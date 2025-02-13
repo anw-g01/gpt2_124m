@@ -149,4 +149,4 @@ Model checkpoints storing model weights, loss values and accuracy scores are wri
 
 ## Acknowledgements
 
-Significant credit goes to [Andrej Karpathy](https://github.com/karpathy) for his insightful YouTube tutorial [Let's reproduce GPT-2 (124M)](https://www.youtube.com/watch?v=l8pRSuU81PU), which served as a valuable foundation and resource for this project. The provided scripts incorporate several refactorings, modifications, and custom configurations applied to the data processing and training setup to replicate similar results.
+Significant credit goes to [Andrej Karpathy](https://github.com/karpathy) for his insightful YouTube tutorial [Let's reproduce GPT-2 (124M)](https://www.youtube.com/watch?v=l8pRSuU81PU), which served as a valuable resource and guide. The provided scripts incorporate several refactorings, modifications, and custom configurations applied to the data processing and training setup to replicate similar results.
