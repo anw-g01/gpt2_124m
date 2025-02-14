@@ -3,7 +3,6 @@
 A PyTorch implementation of OpenAI's [GPT-2](https://github.com/openai/gpt-2) model with 124 million parameters, coded from scratch and pre-trained on approximately 9.9 billion tokens from the [`sample-10BT`](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu/viewer/sample-10BT) subset of the [FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu) dataset. This repository includes all Python scripts for the full data preprocessing, training, and optimisation setup alongside comprehensively documented code for educational purposes. 
 
 ![figure](assets/figure_end_checkpoint_gpus_08_epoch_01_step_18850_2x1_plot.svg)
-
 *Figure 1: Visualisation of the loss curves and accuracy scores over one epoch of pre-training on `sample-10BT`.*
 
 Training the auto-regressive model for one epoch (equivalent to 18,850 parallel steps using eight GPUs) on the `sample-10BT` dataset achieved a validation loss of **3.04** and a [HellaSwag](https://github.com/rowanz/hellaswag/tree/master/data) accuracy score of **31.3%**. These results surpass OpenAI's original smaller [GPT-2](https://github.com/openai/gpt-2) model with the same number of parameters and architecture. By incorporating both validation and evaluation runs with non-compiled distributed training, a single epoch was completed in ~2.5 hours, equating to ~$36 in compute costs ($1.79/GPU/hr for NVIDIA A100 80GB as of Feb 2025). Graph results indicate continued model performance with additional epochs of training while using a more aggressive learning rate schedule.
